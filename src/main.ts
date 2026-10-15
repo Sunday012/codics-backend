@@ -12,8 +12,13 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api/v1');
   app.use(helmet());
+  const corsOrigin = config.get<string>('CORS_ORIGIN', 'http://localhost:5173');
+  const allowedOrigins = corsOrigin
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
   app.enableCors({
-    origin: config.get<string>('CORS_ORIGIN', 'http://localhost:5173').split(','),
+    origin: allowedOrigins,
     credentials: true,
   });
   app.useGlobalPipes(

@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { DataService } from '../data/data.service';
-import { Assignment, Submission, User } from '../data/entities';
+import { Assignment, User } from '../data/entities';
 import { AssignmentDto, ExtendDeadlineDto, GradeDto } from './assignments.dto';
 
 @Injectable()
@@ -115,7 +115,7 @@ export class AssignmentsService {
     return assignment;
   }
 
-  headcount(id: string, user: User) {
+  headcount(id: string, _user: User) {
     const assignment = this.find(id);
     const enrollmentIds = this.data.db.enrollments.filter((e) => e.offeringId === assignment.offeringId).map((e) => e.userId);
     const students = this.data.db.users.filter((u) => enrollmentIds.includes(u.id));

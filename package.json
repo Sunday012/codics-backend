@@ -8,7 +8,9 @@
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "test": "jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --max-warnings=0",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
@@ -17,7 +19,8 @@
     "@nestjs/jwt": "^11.0.1",
     "@nestjs/platform-express": "^11.1.6",
     "@nestjs/swagger": "^11.2.0",
-    "@prisma/client": "^7.10.0",
+    "@nestjs/throttler": "^6.7.1",
+    "@prisma/client": "7.10.0",
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
@@ -34,13 +37,29 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^24.7.2",
     "@types/supertest": "^6.0.3",
+    "@typescript-eslint/eslint-plugin": "^8.71.2",
+    "@typescript-eslint/parser": "^8.71.2",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
     "jest": "^30.2.0",
-    "prisma": "^7.10.0",
+    "prettier": "^3.9.10",
+    "prisma": "7.10.0",
     "source-map-support": "^0.5.21",
     "supertest": "^7.1.4",
     "ts-jest": "^29.4.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
+  },
+  "jest": {
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
   },
   "overrides": {
     "@nestjs/swagger": {

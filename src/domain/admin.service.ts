@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { hash } from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { DataService } from '../data/data.service';
-import { Department, Enrollment, RoleAssignment, User, toSafeUser } from '../data/entities';
+import { Enrollment, RoleAssignment, User, toSafeUser } from '../data/entities';
 import { DepartmentDto, EnrollmentDto, RoleAssignmentDto, SettingsDto, StudentDto } from './admin.dto';
 
 @Injectable()

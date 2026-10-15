@@ -6,15 +6,27 @@ import { DataService } from '../data/data.service';
 import { SafeUser, User, toSafeUser } from '../data/entities';
 import { ActivateDto, LoginDto } from './auth.dto';
 
-interface TokenPayload { sub: string; role: string; type: 'access' | 'refresh' }
+interface TokenPayload {
+  sub: string;
+  role: string;
+  type: 'access' | 'refresh';
+}
 
 @Injectable()
 export class AuthService {
+  private readonly jwtSecret: string;
+  private readonly jwtTtl: string;
+  private readonly refreshTtl: string;
+
   constructor(
     private readonly data: DataService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    this.jwtSecret = this.config.getOrThrow<string>('JWT_SECRET');
+    this.jwtTtl = this.config.get<string>('JWT_TTL', '15m');
+    this.refreshTtl = this.config.get<string>('REFRESH_TOKEN_TTL', '7d');
+  }
 
   async login(dto: LoginDto) {
     const identifier = dto.identifier.trim().toLowerCase();
@@ -34,7 +46,7 @@ export class AuthService {
     let payload: TokenPayload;
     try {
       payload = await this.jwt.verifyAsync<TokenPayload>(refreshToken, {
-        secret: this.config.get<string>('JWT_SECRET', 'development-secret-change-me'),
+        secret: this.jwtSecret,
       });
     } catch {
       throw new UnauthorizedException('Invalid or expired refresh token');
@@ -54,7 +66,9 @@ export class AuthService {
   }
 
   async activate(dto: ActivateDto) {
-    const user = this.data.db.users.find((candidate) => candidate.matricNo?.toLowerCase() === dto.matricNo.toLowerCase());
+    const user = this.data.db.users.find(
+      (candidate) => candidate.matricNo?.toLowerCase() === dto.matricNo.toLowerCase(),
+    );
     if (!user) throw new BadRequestException('Student is not present on the approved roster');
     if (user.status === 'active') throw new BadRequestException('Account is already active');
     // Replace this deterministic development code with an SMS/email provider in production.
@@ -66,23 +80,35 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
-  async issueTokens(user: User): Promise<{ user: SafeUser; accessToken: string; refreshToken: string; token: string }> {
-    const secret = this.config.get<string>('JWT_SECRET', 'development-secret-change-me');
+  async issueTokens(
+    user: User,
+  ): Promise<{ user: SafeUser; accessToken: string; refreshToken: string; token: string }> {
     const accessToken = await this.jwt.signAsync(
       { sub: user.id, role: this.effectiveRole(user), type: 'access' } satisfies TokenPayload,
-      { secret, expiresIn: this.config.get('JWT_TTL', '15m') },
+      { secret: this.jwtSecret, expiresIn: this.jwtTtl as any },
     );
     const refreshToken = await this.jwt.signAsync(
       { sub: user.id, role: this.effectiveRole(user), type: 'refresh' } satisfies TokenPayload,
-      { secret, expiresIn: this.config.get('REFRESH_TOKEN_TTL', '7d') },
+      { secret: this.jwtSecret, expiresIn: this.refreshTtl as any },
     );
     user.refreshTokenHash = await hash(refreshToken, 10);
     await this.data.save();
-    return { user: { ...toSafeUser(user), role: this.effectiveRole(user) }, accessToken, refreshToken, token: accessToken };
+    return {
+      user: { ...toSafeUser(user), role: this.effectiveRole(user) },
+      accessToken,
+      refreshToken,
+      token: accessToken,
+    };
   }
 
   effectiveRole(user: User): User['role'] {
-    if (user.role === 'course_rep' && user.repTermEndDate && new Date(user.repTermEndDate) < new Date()) return 'student';
+    if (
+      user.role === 'course_rep' &&
+      user.repTermEndDate &&
+      new Date(user.repTermEndDate) < new Date()
+    ) {
+      return 'student';
+    }
     return user.role;
   }
 }

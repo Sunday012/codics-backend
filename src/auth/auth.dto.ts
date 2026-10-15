@@ -1,4 +1,5 @@
 import { IsEmail, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsStrongPasswordRules } from '../common/password.util';
 
 export class LoginDto {
   @IsString()
@@ -23,7 +24,7 @@ export class ActivateDto {
   activationCode!: string;
 
   @IsString()
-  @MinLength(8)
+  @IsStrongPasswordRules()
   password!: string;
 
   @IsOptional()
