@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, Roles } from '../auth/auth.decorators';
 import { User } from '../data/entities';
@@ -18,4 +19,9 @@ export class AssignmentsController {
   @Roles('lecturer', 'hod', 'admin') @Patch('submissions/:id/grade') grade(@Param('id') id: string, @CurrentUser() user: User, @Body() dto: GradeDto) { return this.assignments.grade(id, user, dto); }
   @Roles('lecturer', 'hod', 'admin') @Patch('assignments/:id/deadline') extend(@Param('id') id: string, @CurrentUser() user: User, @Body() dto: ExtendDeadlineDto) { return this.assignments.extend(id, user, dto); }
   @Roles('course_rep', 'lecturer', 'hod', 'admin') @Get('assignments/:id/headcount') headcount(@Param('id') id: string, @CurrentUser() user: User) { return this.assignments.headcount(id, user); }
+  @Get('submissions/:id/file') async file(@Param('id') id: string, @CurrentUser() user: User, @Res({ passthrough: true }) response: Response) {
+    const file = await this.assignments.file(id, user);
+    response.setHeader('Content-Disposition', `attachment; filename="${file.name.replace(/["\r\n]/g, '_')}"`);
+    return new StreamableFile(file.data);
+  }
 }

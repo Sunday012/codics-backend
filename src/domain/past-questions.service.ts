@@ -1,62 +1,86 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
-import { DataService } from '../data/data.service';
-import { PastQuestion, User } from '../data/entities';
+import { User } from '../data/entities';
+import { PrismaService } from '../database/prisma.service';
 import { ReportPaperDto, UploadPaperDto } from './past-questions.dto';
 
 @Injectable()
 export class PastQuestionsService {
-  constructor(private data: DataService) {}
-  list(query: Record<string, string>) {
-    const page = Math.max(Number(query.page) || 1, 1), limit = Math.min(Number(query.limit) || 20, 100);
-    let items = this.data.db.pastQuestions.filter((paper) => paper.status === 'approved');
-    for (const key of ['courseCode', 'department', 'level', 'session', 'semester', 'examType'] as const) {
-      if (query[key] && query[key] !== 'all') items = items.filter((paper) => paper[key] === query[key]);
-    }
-    if (query.search) items = items.filter((p) => `${p.courseCode} ${p.courseTitle}`.toLowerCase().includes(query.search.toLowerCase()));
-    return { items: items.slice((page - 1) * limit, page * limit), total: items.length, page, totalPages: Math.ceil(items.length / limit) };
+  constructor(private prisma: PrismaService) {}
+
+  async list(query: Record<string, string>) {
+    const page = Math.max(Number(query.page) || 1, 1);
+    const limit = Math.min(Number(query.limit) || 20, 100);
+    const filters = Object.fromEntries(
+      ['courseCode', 'department', 'level', 'session', 'semester', 'examType']
+        .filter((key) => query[key] && query[key] !== 'all')
+        .map((key) => [key, query[key]]),
+    );
+    const where = {
+      status: 'approved', ...filters,
+      ...(query.search ? { OR: [
+        { courseCode: { contains: query.search, mode: 'insensitive' as const } },
+        { courseTitle: { contains: query.search, mode: 'insensitive' as const } },
+      ] } : {}),
+    };
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.pastQuestion.findMany({ where, include: { reports: true }, orderBy: { uploadedAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
+      this.prisma.pastQuestion.count({ where }),
+    ]);
+    return { items, total, page, totalPages: Math.ceil(total / limit) };
   }
-  get(id: string) {
-    const paper = this.data.db.pastQuestions.find((p) => p.id === id && p.status === 'approved');
+
+  async get(id: string) {
+    const paper = await this.prisma.pastQuestion.findFirst({ where: { id, status: 'approved' }, include: { reports: true } });
     if (!paper) throw new NotFoundException('Past question not found');
     return paper;
   }
+
   async upload(user: User, dto: UploadPaperDto) {
-    const duplicate = this.data.db.pastQuestions.some((p) => p.courseCode === dto.courseCode && p.session === dto.session && p.semester === dto.semester && p.examType === dto.examType && p.status !== 'rejected');
+    const duplicate = await this.prisma.pastQuestion.findFirst({ where: {
+      courseCode: dto.courseCode, session: dto.session, semester: dto.semester, examType: dto.examType, status: { not: 'rejected' },
+    } });
     if (duplicate) throw new ConflictException('A matching paper already exists or is awaiting review');
-    const paper: PastQuestion = { id: randomUUID(), ...dto, uploaderId: user.id, uploaderName: user.name, status: 'pending', uploadedAt: new Date().toISOString(), reports: [] };
-    this.data.db.pastQuestions.unshift(paper);
-    await this.data.audit(user, 'UPLOAD_PAST_QUESTION', 'PastQuestion', paper.id, `${paper.courseCode} ${paper.session}`);
-    return paper;
+    const paper = await this.prisma.pastQuestion.create({ data: { ...dto, uploaderId: user.id, uploaderName: user.name, status: 'pending' } });
+    await this.prisma.audit(user, 'UPLOAD_PAST_QUESTION', 'PastQuestion', paper.id, `${paper.courseCode} ${paper.session}`);
+    return { ...paper, reports: [] };
   }
+
   pending(user: User) {
-    return this.data.db.pastQuestions.filter((p) => p.status === 'pending' && (user.role === 'admin' || p.department === user.department));
+    return this.prisma.pastQuestion.findMany({ where: { status: 'pending', ...(user.role === 'admin' ? {} : { department: user.department }) }, include: { reports: true }, orderBy: { uploadedAt: 'asc' } });
   }
-  mine(user: User) { return this.data.db.pastQuestions.filter((p) => p.uploaderId === user.id); }
+
+  mine(user: User) {
+    return this.prisma.pastQuestion.findMany({ where: { uploaderId: user.id }, include: { reports: true }, orderBy: { uploadedAt: 'desc' } });
+  }
+
   async review(id: string, user: User, approved: boolean, reason?: string) {
-    const paper = this.data.db.pastQuestions.find((p) => p.id === id);
+    const paper = await this.prisma.pastQuestion.findUnique({ where: { id } });
     if (!paper) throw new NotFoundException('Past question not found');
     if (user.role === 'hod' && paper.department !== user.department) throw new ForbiddenException('HOD review is limited to their department');
-    paper.status = approved ? 'approved' : 'rejected';
-    paper.reviewedBy = user.id;
-    paper.rejectionReason = approved ? undefined : reason;
-    await this.data.audit(user, approved ? 'APPROVE_PAST_QUESTION' : 'REJECT_PAST_QUESTION', 'PastQuestion', id, paper.courseCode, reason);
-    return paper;
+    const updated = await this.prisma.pastQuestion.update({ where: { id }, data: {
+      status: approved ? 'approved' : 'rejected', reviewedBy: user.id, rejectionReason: approved ? null : reason,
+    } });
+    await this.prisma.audit(user, approved ? 'APPROVE_PAST_QUESTION' : 'REJECT_PAST_QUESTION', 'PastQuestion', id, paper.courseCode, reason);
+    return updated;
   }
+
   async report(id: string, user: User, dto: ReportPaperDto) {
-    const paper = this.get(id);
-    if (paper.reports.some((r) => r.reportedBy === user.id)) throw new ConflictException('You already reported this paper');
-    paper.reports.push({ id: randomUUID(), reportedBy: user.id, reason: dto.reason, note: dto.note, createdAt: new Date().toISOString() });
-    await this.data.save();
+    await this.get(id);
+    try {
+      await this.prisma.pastQuestionReport.create({ data: { pastQuestionId: id, reportedBy: user.id, reason: dto.reason, note: dto.note } });
+    } catch (error: unknown) {
+      if ((error as { code?: string }).code === 'P2002') throw new ConflictException('You already reported this paper');
+      throw error;
+    }
     return { success: true };
   }
+
   async remove(id: string, user: User) {
-    const index = this.data.db.pastQuestions.findIndex((p) => p.id === id);
-    if (index < 0) throw new NotFoundException('Past question not found');
-    const paper = this.data.db.pastQuestions[index];
+    const paper = await this.prisma.pastQuestion.findUnique({ where: { id } });
+    if (!paper) throw new NotFoundException('Past question not found');
     if (paper.uploaderId !== user.id && !['admin', 'hod'].includes(user.role)) throw new ForbiddenException('You cannot delete this paper');
-    this.data.db.pastQuestions.splice(index, 1);
-    await this.data.audit(user, 'DELETE_PAST_QUESTION', 'PastQuestion', id, paper.courseCode);
+    await this.prisma.pastQuestion.delete({ where: { id } });
+    await this.prisma.audit(user, 'DELETE_PAST_QUESTION', 'PastQuestion', id, paper.courseCode);
     return { success: true };
   }
 }

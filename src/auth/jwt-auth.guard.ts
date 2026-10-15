@@ -2,12 +2,12 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
-import { DataService } from '../data/data.service';
+import { PrismaService } from '../database/prisma.service';
 import { IS_PUBLIC_KEY } from './auth.decorators';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(private reflector: Reflector, private jwt: JwtService, private config: ConfigService, private data: DataService) {}
+  constructor(private reflector: Reflector, private jwt: JwtService, private config: ConfigService, private prisma: PrismaService) {}
 
   async canActivate(context: ExecutionContext) {
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [context.getHandler(), context.getClass()])) return true;
@@ -19,7 +19,7 @@ export class JwtAuthGuard implements CanActivate {
         secret: this.config.get<string>('JWT_SECRET', 'development-secret-change-me'),
       });
       if (payload.type !== 'access') throw new Error('wrong token type');
-      const user = this.data.db.users.find((candidate) => candidate.id === payload.sub);
+      const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
       if (!user || user.status !== 'active') throw new Error('inactive account');
       request.user = user;
       return true;

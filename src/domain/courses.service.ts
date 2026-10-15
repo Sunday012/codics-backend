@@ -1,113 +1,105 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
-import { DataService } from '../data/data.service';
-import { CourseModule, Material, User } from '../data/entities';
+import { User } from '../data/entities';
+import { PrismaService } from '../database/prisma.service';
 import { MaterialDto, ModuleDto } from './courses.dto';
 
 @Injectable()
 export class CoursesService {
-  constructor(private data: DataService) {}
+  constructor(private prisma: PrismaService) {}
 
-  list(user: User, query: { department?: string; level?: string; search?: string }) {
-    const enrolledIds = new Set(this.data.db.enrollments.filter((e) => e.userId === user.id).map((e) => e.courseId));
-    let courses = this.data.db.courses.filter((course) => {
-      if (query.department && query.department !== 'all' && course.department !== query.department) return false;
-      if (query.level && query.level !== 'all' && course.level !== query.level) return false;
-      if (query.search && !`${course.code} ${course.title}`.toLowerCase().includes(query.search.toLowerCase())) return false;
-      return true;
+  async list(user: User, query: { department?: string; level?: string; search?: string }) {
+    const courses = await this.prisma.course.findMany({
+      where: {
+        ...(query.department && query.department !== 'all' ? { department: query.department } : {}),
+        ...(query.level && query.level !== 'all' ? { level: query.level } : {}),
+        ...(query.search ? { OR: [
+          { code: { contains: query.search, mode: 'insensitive' } },
+          { title: { contains: query.search, mode: 'insensitive' } },
+        ] } : {}),
+      },
+      include: { offerings: true, enrollments: { where: { userId: user.id }, select: { id: true } } },
+      orderBy: { code: 'asc' },
     });
-    return courses.map((course) => ({ ...course, isEnrolled: enrolledIds.has(course.id), offerings: this.data.db.offerings.filter((o) => o.courseId === course.id) }));
+    return courses.map(({ enrollments, ...course }) => ({ ...course, isEnrolled: enrollments.length > 0 }));
   }
 
-  get(courseId: string, session?: string) {
-    const course = this.data.db.courses.find((c) => c.id === courseId);
+  async get(courseId: string, session?: string) {
+    const course = await this.prisma.course.findUnique({ where: { id: courseId }, include: { offerings: { where: session ? { session } : {} } } });
     if (!course) throw new NotFoundException('Course not found');
-    const offerings = this.data.db.offerings.filter((o) => o.courseId === courseId && (!session || o.session === session));
-    return { ...course, offerings };
+    return course;
   }
 
-  offering(id: string, user: User) {
-    const offering = this.data.db.offerings.find((o) => o.id === id);
+  async offering(id: string, user: User) {
+    const canManage = await this.canManageOffering(user, id);
+    const offering = await this.prisma.offering.findUnique({
+      where: { id },
+      include: { modules: { orderBy: { order: 'asc' }, include: { materials: { where: canManage ? {} : { status: 'published' }, orderBy: { createdAt: 'asc' } } } } },
+    });
     if (!offering) throw new NotFoundException('Course offering not found');
-    const modules = this.data.db.modules.filter((m) => m.offeringId === id).sort((a, b) => a.order - b.order);
-    const canManage = this.canManageOffering(user, id);
-    return {
-      ...offering,
-      modules: modules.map((module) => ({
-        ...module,
-        materials: this.data.db.materials.filter((material) => material.moduleId === module.id && (canManage || material.status === 'published')),
-      })),
-      canManage,
-    };
+    return { ...offering, canManage };
   }
 
   enrollments(user: User) {
-    return this.data.db.enrollments.filter((e) => e.userId === user.id).map((e) => ({ ...e, course: this.data.db.courses.find((c) => c.id === e.courseId) }));
+    return this.prisma.enrollment.findMany({ where: { userId: user.id }, include: { offering: { include: { course: true } } }, orderBy: { createdAt: 'desc' } });
   }
 
   async createModule(offeringId: string, user: User, dto: ModuleDto) {
-    this.assertCanManage(user, offeringId);
-    const module: CourseModule = { id: randomUUID(), offeringId, ...dto };
-    this.data.db.modules.push(module);
-    await this.data.audit(user, 'CREATE_MODULE', 'CourseModule', module.id, module.title);
+    await this.assertCanManage(user, offeringId);
+    const module = await this.prisma.courseModule.create({ data: { offeringId, ...dto } });
+    await this.prisma.audit(user, 'CREATE_MODULE', 'CourseModule', module.id, module.title);
     return module;
   }
 
   async removeModule(id: string, user: User) {
-    const index = this.data.db.modules.findIndex((m) => m.id === id);
-    if (index < 0) throw new NotFoundException('Module not found');
-    const module = this.data.db.modules[index];
-    this.assertCanManage(user, module.offeringId);
-    this.data.db.modules.splice(index, 1);
-    this.data.db.materials = this.data.db.materials.filter((m) => m.moduleId !== id);
-    await this.data.audit(user, 'DELETE_MODULE', 'CourseModule', id, module.title);
+    const module = await this.prisma.courseModule.findUnique({ where: { id } });
+    if (!module) throw new NotFoundException('Module not found');
+    await this.assertCanManage(user, module.offeringId);
+    await this.prisma.courseModule.delete({ where: { id } });
+    await this.prisma.audit(user, 'DELETE_MODULE', 'CourseModule', id, module.title);
     return { success: true };
   }
 
   async createMaterial(moduleId: string, user: User, dto: MaterialDto) {
-    const module = this.data.db.modules.find((m) => m.id === moduleId);
+    const module = await this.prisma.courseModule.findUnique({ where: { id: moduleId } });
     if (!module) throw new NotFoundException('Module not found');
-    this.assertCanManage(user, module.offeringId);
-    const material: Material = { id: randomUUID(), moduleId, offeringId: module.offeringId, ...dto, status: dto.status ?? 'draft', createdAt: new Date().toISOString() };
-    this.data.db.materials.push(material);
-    await this.data.audit(user, 'CREATE_MATERIAL', 'Material', material.id, material.title);
+    await this.assertCanManage(user, module.offeringId);
+    const material = await this.prisma.material.create({ data: { moduleId, offeringId: module.offeringId, ...dto, status: dto.status ?? 'draft' } });
+    await this.prisma.audit(user, 'CREATE_MATERIAL', 'Material', material.id, material.title);
     return material;
   }
 
   async updateMaterial(id: string, user: User, dto: MaterialDto) {
-    const index = this.data.db.materials.findIndex((m) => m.id === id);
-    if (index < 0) throw new NotFoundException('Material not found');
-    this.assertCanManage(user, this.data.db.materials[index].offeringId);
-    this.data.db.materials[index] = { ...this.data.db.materials[index], ...dto, updatedAt: new Date().toISOString() };
-    await this.data.audit(user, 'UPDATE_MATERIAL', 'Material', id, dto.title);
-    return this.data.db.materials[index];
+    const material = await this.prisma.material.findUnique({ where: { id } });
+    if (!material) throw new NotFoundException('Material not found');
+    await this.assertCanManage(user, material.offeringId);
+    const updated = await this.prisma.material.update({ where: { id }, data: dto });
+    await this.prisma.audit(user, 'UPDATE_MATERIAL', 'Material', id, dto.title);
+    return updated;
   }
 
   async toggleMaterial(id: string, user: User) {
-    const material = this.data.db.materials.find((m) => m.id === id);
+    const material = await this.prisma.material.findUnique({ where: { id } });
     if (!material) throw new NotFoundException('Material not found');
-    this.assertCanManage(user, material.offeringId);
-    material.status = material.status === 'draft' ? 'published' : 'draft';
-    material.updatedAt = new Date().toISOString();
-    await this.data.save();
-    return material;
+    await this.assertCanManage(user, material.offeringId);
+    return this.prisma.material.update({ where: { id }, data: { status: material.status === 'draft' ? 'published' : 'draft' } });
   }
 
   async removeMaterial(id: string, user: User) {
-    const index = this.data.db.materials.findIndex((m) => m.id === id);
-    if (index < 0) throw new NotFoundException('Material not found');
-    const material = this.data.db.materials[index];
-    this.assertCanManage(user, material.offeringId);
-    this.data.db.materials.splice(index, 1);
-    await this.data.audit(user, 'DELETE_MATERIAL', 'Material', id, material.title);
+    const material = await this.prisma.material.findUnique({ where: { id } });
+    if (!material) throw new NotFoundException('Material not found');
+    await this.assertCanManage(user, material.offeringId);
+    await this.prisma.material.delete({ where: { id } });
+    await this.prisma.audit(user, 'DELETE_MATERIAL', 'Material', id, material.title);
     return { success: true };
   }
 
-  private canManageOffering(user: User, offeringId: string) {
+  private async canManageOffering(user: User, offeringId: string) {
     if (['admin', 'hod'].includes(user.role)) return true;
-    return user.role === 'lecturer' && !!this.data.db.offerings.find((o) => o.id === offeringId)?.lecturerIds.includes(user.id);
+    if (user.role !== 'lecturer') return false;
+    return !!(await this.prisma.offering.findFirst({ where: { id: offeringId, lecturerIds: { has: user.id } }, select: { id: true } }));
   }
-  private assertCanManage(user: User, offeringId: string) {
-    if (!this.canManageOffering(user, offeringId)) throw new ForbiddenException('You are not assigned to manage this course offering');
+
+  private async assertCanManage(user: User, offeringId: string) {
+    if (!(await this.canManageOffering(user, offeringId))) throw new ForbiddenException('You are not assigned to manage this course offering');
   }
 }

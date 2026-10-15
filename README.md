@@ -7,6 +7,9 @@ NestJS + TypeScript backend for the CODICS frontend. It provides JWT authenticat
 ```bash
 cp .env.example .env
 npm install
+docker compose up -d postgres
+npm run db:deploy
+npm run db:seed
 npm run start:dev
 ```
 
@@ -28,7 +31,22 @@ New invited student accounts use the development activation code `CODICS`. Repla
 
 ## Persistence
 
-The starter writes atomically to `data/codics.json`, which keeps local setup dependency-free and data durable across restarts. Configure `DATA_FILE` to move it. For multi-instance production deployment, replace `DataService` with a transactional PostgreSQL repository and move uploaded files to object storage; domain services and controllers can remain unchanged.
+CODICS uses PostgreSQL through Prisma ORM. Set `DATABASE_URL` to the pooled/runtime PostgreSQL connection string. If a hosted provider supplies a separate direct connection, set `DIRECT_URL` for migrations.
+
+```env
+DATABASE_URL=postgresql://codics:codics@localhost:5433/codics?schema=public
+```
+
+The included Compose service exposes PostgreSQL on host port `5433` to avoid colliding with an existing local server. Schema migrations live in `prisma/migrations`, and seed data is idempotent.
+
+```bash
+npm run db:migrate   # create a development migration
+npm run db:deploy    # apply committed migrations in production
+npm run db:seed      # insert/update development seed data
+npm run db:studio    # inspect the database
+```
+
+Submission bytes are currently stored in PostgreSQL `BYTEA`, protected by the same assignment privacy rules as the metadata. Large-scale deployments can replace this field with object-storage keys without changing the public API.
 
 ## Security behavior
 
@@ -47,3 +65,5 @@ The starter writes atomically to `data/codics.json`, which keeps local setup dep
 npm run build
 npm run test:e2e
 ```
+
+The end-to-end suite expects a migrated and seeded test database. Override its connection with `TEST_DATABASE_URL`.

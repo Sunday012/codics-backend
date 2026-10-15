@@ -13,7 +13,7 @@ export interface User {
   staffId?: string;
   avatar: string;
   status: 'invited' | 'active' | 'suspended';
-  repTermEndDate?: string;
+  repTermEndDate?: string | Date | null;
   refreshTokenHash?: string;
 }
 

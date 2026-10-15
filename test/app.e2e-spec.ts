@@ -5,12 +5,13 @@ import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 
 describe('CODICS API', () => {
+  const assignmentId = '00000000-0000-4000-8000-000000000701';
   let app: INestApplication<App>;
   let studentToken: string;
   let lecturerToken: string;
 
   beforeAll(async () => {
-    process.env.DATA_FILE = `/tmp/codics-e2e-${process.pid}.json`;
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? 'postgresql://codics:codics@localhost:5433/codics?schema=public';
     process.env.JWT_SECRET = 'codics-e2e-secret-with-more-than-32-characters';
     const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = module.createNestApplication();
@@ -44,20 +45,20 @@ describe('CODICS API', () => {
 
   it('accepts a valid enrolled-student submission and exposes it only to assigned staff', async () => {
     const submission = await request(app.getHttpServer())
-      .post('/api/v1/assignments/asg-csc301-1/submissions')
+      .post(`/api/v1/assignments/${assignmentId}/submissions`)
       .set('Authorization', `Bearer ${studentToken}`)
       .attach('file', Buffer.from('%PDF-1.4 test'), 'answer.pdf')
       .expect(201);
     expect(submission.body.currentVersion.sha256).toMatch(/^[a-f0-9]{64}$/);
 
-    const staffView = await request(app.getHttpServer()).get('/api/v1/assignments/asg-csc301-1/submissions').set('Authorization', `Bearer ${lecturerToken}`).expect(200);
+    const staffView = await request(app.getHttpServer()).get(`/api/v1/assignments/${assignmentId}/submissions`).set('Authorization', `Bearer ${lecturerToken}`).expect(200);
     expect(staffView.body).toHaveLength(1);
     expect(staffView.body[0].studentMatric).toBe('CSC/2022/084');
   });
 
   it('rejects disallowed submission file types', async () => {
     await request(app.getHttpServer())
-      .post('/api/v1/assignments/asg-csc301-1/submissions')
+      .post(`/api/v1/assignments/${assignmentId}/submissions`)
       .set('Authorization', `Bearer ${studentToken}`)
       .attach('file', Buffer.from('bad'), 'answer.exe')
       .expect(400);
