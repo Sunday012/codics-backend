@@ -167,11 +167,25 @@ export class AuthService {
     const normalized = matricNo.trim().toUpperCase();
     const user = await this.prisma.user.findUnique({
       where: { matricNo: normalized },
+      include: { department: true },
     });
 
+    const isDevEnv =
+      !this.isProduction && this.config.get<string>('NODE_ENV') !== 'test';
+    const isDevRosterAccount =
+      isDevEnv &&
+      ['CSC/2026/001', 'SEN/2026/005', 'CYB/2026/012', 'IFT/2026/020'].includes(
+        normalized,
+      );
+
     // Timing-attack mitigation: run a dummy bcrypt hash if user does not qualify
-    if (!user || user.status === UserStatus.active) {
+    if (!user || (user.status === UserStatus.active && !isDevRosterAccount)) {
       await hash('dummy-activation-code-for-timing', 10);
+      if (!this.isProduction) {
+        console.log(
+          `[AUTH DEV] Activation lookup for ${normalized}: ${!user ? 'student not found on roster' : 'account already active'}`,
+        );
+      }
       return {
         success: true,
         message: 'If the student is on the approved roster, an activation code has been sent',
@@ -193,7 +207,10 @@ export class AuthService {
     });
 
     const targetEmail = user.email || `${user.matricNo?.replaceAll('/', '').toLowerCase()}@student.foc.edu.ng`;
-    await this.mail.sendActivationCode(targetEmail, rawCode);
+    await this.mail.sendActivationCode(
+      targetEmail,
+      isDevEnv ? `${rawCode} (or static dev bypass: CODICS)` : rawCode,
+    );
 
     return {
       success: true,
@@ -208,10 +225,21 @@ export class AuthService {
       include: { department: true },
     });
 
-    if (!user || user.status === UserStatus.active) {
+    const isDevEnv =
+      !this.isProduction && this.config.get<string>('NODE_ENV') !== 'test';
+    const isDevRosterAccount =
+      isDevEnv &&
+      ['CSC/2026/001', 'SEN/2026/005', 'CYB/2026/012', 'IFT/2026/020'].includes(
+        normalizedMatric,
+      );
+
+    if (!user || (user.status === UserStatus.active && !isDevRosterAccount)) {
       await hash('dummy-for-timing', 10);
       throw new BadRequestException('Invalid or expired activation details');
     }
+
+    const cleanInputCode = dto.activationCode.trim();
+    const isDevBypass = isDevEnv && cleanInputCode.toUpperCase() === 'CODICS';
 
     // Find the latest active code for this user
     const latestCode = await this.prisma.activationCode.findFirst({
@@ -224,19 +252,26 @@ export class AuthService {
       orderBy: { createdAt: 'desc' },
     });
 
-    if (!latestCode) {
+    if (!latestCode && !isDevBypass) {
       await hash('dummy-for-timing', 10);
       throw new BadRequestException('Invalid or expired activation details');
     }
 
-    // Increment attempts count
-    await this.prisma.activationCode.update({
-      where: { id: latestCode.id },
-      data: { attempts: { increment: 1 } },
-    });
+    if (latestCode) {
+      // Increment attempts count
+      await this.prisma.activationCode.update({
+        where: { id: latestCode.id },
+        data: { attempts: { increment: 1 } },
+      });
+    }
 
-    // Check code
-    const isMatch = await compare(dto.activationCode, latestCode.codeHash);
+    // Check code (accepts generated 6-digit code or static dev bypass CODICS in development)
+    const isMatch =
+      isDevBypass ||
+      (latestCode
+        ? (await compare(cleanInputCode, latestCode.codeHash)) ||
+          (await compare(cleanInputCode.toUpperCase(), latestCode.codeHash))
+        : false);
     if (!isMatch) {
       throw new BadRequestException('Invalid or expired activation details');
     }
@@ -244,10 +279,12 @@ export class AuthService {
     // Activation succeeds: mark code as used and activate user
     const newPasswordHash = await hash(dto.password, 12);
     const updatedUser = await this.prisma.$transaction(async (tx) => {
-      await tx.activationCode.update({
-        where: { id: latestCode.id },
-        data: { usedAt: new Date() },
-      });
+      if (latestCode) {
+        await tx.activationCode.update({
+          where: { id: latestCode.id },
+          data: { usedAt: new Date() },
+        });
+      }
       return tx.user.update({
         where: { id: user.id },
         data: {

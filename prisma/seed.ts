@@ -41,13 +41,13 @@ async function main() {
     create: { id: 'dept-sen', code: 'SEN', name: 'Software Engineering' },
   });
 
-  await prisma.department.upsert({
+  const deptCyb = await prisma.department.upsert({
     where: { code: 'CYB' },
     update: { name: 'Cyber Security' },
     create: { id: 'dept-cyb', code: 'CYB', name: 'Cyber Security' },
   });
 
-  await prisma.department.upsert({
+  const deptIft = await prisma.department.upsert({
     where: { code: 'IFT' },
     update: { name: 'Information Technology' },
     create: { id: 'dept-it', code: 'IFT', name: 'Information Technology' },
@@ -168,6 +168,87 @@ async function main() {
       role: Role.admin,
       departmentId: deptCsc.id,
       status: UserStatus.active,
+    },
+  });
+
+  // 3b. Invited Roster Students (for Account Activation flow)
+  await prisma.user.upsert({
+    where: { matricNo: 'CSC/2026/001' },
+    update: {
+      fullName: 'Blessing Okafor',
+      email: 'b.okafor@stu.foc.edu.ng',
+      departmentId: deptCsc.id,
+      level: 100,
+    },
+    create: {
+      id: 'usr-invited-01',
+      fullName: 'Blessing Okafor',
+      email: 'b.okafor@stu.foc.edu.ng',
+      matricNo: 'CSC/2026/001',
+      role: Role.student,
+      departmentId: deptCsc.id,
+      level: 100,
+      status: UserStatus.invited,
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { matricNo: 'SEN/2026/005' },
+    update: {
+      fullName: 'Tunde Bakare',
+      email: 't.bakare@stu.foc.edu.ng',
+      departmentId: deptSen.id,
+      level: 100,
+    },
+    create: {
+      id: 'usr-invited-02',
+      fullName: 'Tunde Bakare',
+      email: 't.bakare@stu.foc.edu.ng',
+      matricNo: 'SEN/2026/005',
+      role: Role.student,
+      departmentId: deptSen.id,
+      level: 100,
+      status: UserStatus.invited,
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { matricNo: 'CYB/2026/012' },
+    update: {
+      fullName: 'Fatima Mohammed',
+      email: 'f.mohammed@stu.foc.edu.ng',
+      departmentId: deptCyb.id,
+      level: 200,
+    },
+    create: {
+      id: 'usr-invited-03',
+      fullName: 'Fatima Mohammed',
+      email: 'f.mohammed@stu.foc.edu.ng',
+      matricNo: 'CYB/2026/012',
+      role: Role.student,
+      departmentId: deptCyb.id,
+      level: 200,
+      status: UserStatus.invited,
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { matricNo: 'IFT/2026/020' },
+    update: {
+      fullName: 'David Chen',
+      email: 'd.chen@stu.foc.edu.ng',
+      departmentId: deptIft.id,
+      level: 100,
+    },
+    create: {
+      id: 'usr-invited-04',
+      fullName: 'David Chen',
+      email: 'd.chen@stu.foc.edu.ng',
+      matricNo: 'IFT/2026/020',
+      role: Role.student,
+      departmentId: deptIft.id,
+      level: 100,
+      status: UserStatus.invited,
     },
   });
 
