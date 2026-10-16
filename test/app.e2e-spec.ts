@@ -1,36 +1,50 @@
+import 'reflect-metadata';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import cookieParser = require('cookie-parser');
 import request = require('supertest');
-import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 
 describe('CODICS API', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let studentToken: string;
   let lecturerToken: string;
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
-    process.env.DATA_FILE = `./data/codics-e2e-${process.pid}.json`;
+    const testDbUrl =
+      process.env.TEST_DATABASE_URL ||
+      'postgresql://codics:codics@127.0.0.1:5432/codics_test?schema=public';
+    if (!testDbUrl.includes('localhost') && !testDbUrl.includes('127.0.0.1')) {
+      throw new Error('TEST_DATABASE_URL must point to a local test database!');
+    }
+    process.env.DATABASE_URL = testDbUrl;
     process.env.JWT_SECRET = 'codics-e2e-secret-with-more-than-32-characters';
-    const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+
+    const module = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
     app = module.createNestApplication();
     app.setGlobalPrefix('api/v1');
+    app.use(cookieParser());
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
     );
     await app.init();
 
-    studentToken = (
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ identifier: 'CSC/2022/084', password: 'password123' })
-    ).body.accessToken;
-    lecturerToken = (
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ identifier: 'i.adeleke@foc.edu.ng', password: 'password123' })
-    ).body.accessToken;
+    const studentRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ identifier: 'CSC/2022/084', password: 'password123' });
+    studentToken = studentRes.body.accessToken;
+
+    const lecturerRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ identifier: 'i.adeleke@foc.edu.ng', password: 'password123' });
+    lecturerToken = lecturerRes.body.accessToken;
   });
 
   afterAll(async () => {
@@ -44,8 +58,20 @@ describe('CODICS API', () => {
       .expect(({ body }) => expect(body.status).toBe('ok'));
   });
 
+  it('proves database connectivity via GET /health/db', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/health/db')
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.status).toBe('ok');
+        expect(body.database).toBe('connected');
+      });
+  });
+
   it('returns server time via GET /time without authentication', async () => {
-    const res = await request(app.getHttpServer()).get('/api/v1/time').expect(200);
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/time')
+      .expect(200);
     expect(res.body.now).toBeDefined();
     expect(new Date(res.body.now).toISOString()).toBe(res.body.now);
   });
@@ -70,7 +96,12 @@ describe('CODICS API', () => {
     await request(app.getHttpServer())
       .post('/api/v1/notices')
       .set('Authorization', `Bearer ${studentToken}`)
-      .send({ title: 'No', content: 'Not permitted', category: 'general', scope: 'faculty' })
+      .send({
+        title: 'No',
+        content: 'Not permitted',
+        category: 'general',
+        scope: 'faculty',
+      })
       .expect(403);
   });
 

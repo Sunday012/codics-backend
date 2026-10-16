@@ -11,8 +11,14 @@ export class LoginDto {
 }
 
 export class RefreshDto {
+  @IsOptional()
   @IsString()
-  refreshToken!: string;
+  refreshToken?: string;
+}
+
+export class ActivateLookupDto {
+  @Matches(/^[A-Z]{2,4}\/\d{4}\/\d{3,4}$/i)
+  matricNo!: string;
 }
 
 export class ActivateDto {
@@ -30,4 +36,23 @@ export class ActivateDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+}
+
+export class ForgotPasswordDto {
+  @IsOptional()
+  @IsString()
+  identifier?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  token!: string;
+
+  @IsString()
+  @IsStrongPasswordRules()
+  newPassword!: string;
 }

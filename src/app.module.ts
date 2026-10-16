@@ -9,9 +9,10 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { validateEnvironment } from './common/config.validator';
 import { CustomThrottlerGuard } from './common/custom-throttler.guard';
 import { RequestLoggingMiddleware } from './common/request-logging.middleware';
-import { DataModule } from './data/data.module';
+import { CommonModule } from './common/common.module';
 import { DomainModule } from './domain/domain.module';
 import { HealthController } from './health.controller';
+import { PrismaModule } from './prisma/prisma.module';
 import { TimeController } from './time.controller';
 
 @Module({
@@ -19,14 +20,16 @@ import { TimeController } from './time.controller';
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnvironment,
+      ignoreEnvFile: process.env.NODE_ENV === 'test',
     }),
     ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60000, limit: 100 },
+      { name: 'default', ttl: 60000, limit: process.env.NODE_ENV === 'test' ? 1000 : 100 },
       { name: 'login', ttl: 60000, limit: 5 },
       { name: 'activate', ttl: 60000, limit: 5 },
       { name: 'refresh', ttl: 60000, limit: 20 },
     ]),
-    DataModule,
+    PrismaModule,
+    CommonModule,
     AuthModule,
     DomainModule,
   ],

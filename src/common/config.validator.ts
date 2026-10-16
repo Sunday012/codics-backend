@@ -23,8 +23,8 @@ export function validateJwtSecret(
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {
-  const nodeEnv = (config.NODE_ENV as string) || process.env.NODE_ENV;
-  const jwtSecret = (config.JWT_SECRET as string) || process.env.JWT_SECRET;
+  const nodeEnv = config.NODE_ENV as string | undefined;
+  const jwtSecret = config.JWT_SECRET as string | undefined;
   validateJwtSecret(jwtSecret, nodeEnv);
   return config;
 }

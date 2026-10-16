@@ -1,139 +1,657 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { DataService } from '../data/data.service';
-import { Assignment, User } from '../data/entities';
+import { AssignmentStatus, Role } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../common/audit.service';
+import { StorageService } from '../common/storage.service';
+import { AuthService } from '../auth/auth.service';
+import { SafeUser } from '../common/user.util';
 import { AssignmentDto, ExtendDeadlineDto, GradeDto } from './assignments.dto';
 
 @Injectable()
 export class AssignmentsService {
-  constructor(private data: DataService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly storage: StorageService,
+    private readonly auth: AuthService,
+  ) {}
 
-  list(user: User, query: { courseCode?: string; tab?: string }) {
-    let items = this.data.db.assignments.filter((a) => a.status === 'published' || this.canManage(user, a));
-    if (query.courseCode && query.courseCode !== 'all') items = items.filter((a) => a.courseCode === query.courseCode);
-    if (user.role === 'student' || user.role === 'course_rep') {
-      const enrolled = new Set(this.data.db.enrollments.filter((e) => e.userId === user.id).map((e) => e.offeringId));
-      items = items.filter((a) => enrolled.has(a.offeringId));
+  private mapAssignment(a: any) {
+    return {
+      id: a.id,
+      courseId: a.offering?.courseId || '',
+      offeringId: a.offeringId,
+      courseCode: a.offering?.course?.code || '',
+      department: a.offering?.course?.department?.name || '',
+      level: a.offering?.course ? String(a.offering.course.level) : '',
+      title: a.title,
+      instructions: a.instructions,
+      dueDate: a.deadline.toISOString(),
+      deadline: a.deadline.toISOString(),
+      totalMarks: 100,
+      createdAt: a.createdAt.toISOString(),
+      status: a.status,
+      allowedFileTypes: a.allowedTypes,
+      maxSizeBytes: a.maxSizeBytes,
+      allowLate: a.allowLate,
+      lecturerIds: a.offering?.lecturers
+        ? a.offering.lecturers.map((l: any) => l.userId)
+        : [],
+      studentDeadlineExtensions:
+        (a.studentExtensions as Record<string, string>) || {},
+    };
+  }
+
+  private mapSubmission(s: any, courseCode: string) {
+    const sortedVersions = (s.versions || []).slice().sort((a: any, b: any) => a.version - b.version);
+    const latestVersion =
+      sortedVersions.length > 0 ? sortedVersions[sortedVersions.length - 1] : null;
+
+    const versions = sortedVersions.map((v: any) => ({
+      version: v.version,
+      fileUrl: `/api/v1/assignments/${s.assignmentId}/submissions/${s.id}/download`,
+      fileName: v.fileName,
+      fileSizeBytes: v.sizeBytes,
+      sha256: v.sha256,
+      submittedAt: v.submittedAt.toISOString(),
+      isLate: v.isLate,
+    }));
+
+    const currentVersion = latestVersion
+      ? {
+          version: latestVersion.version,
+          fileUrl: `/api/v1/assignments/${s.assignmentId}/submissions/${s.id}/download`,
+          fileName: latestVersion.fileName,
+          fileSizeBytes: latestVersion.sizeBytes,
+          sha256: latestVersion.sha256,
+          submittedAt: latestVersion.submittedAt.toISOString(),
+          isLate: latestVersion.isLate,
+        }
+      : null;
+
+    let status: 'submitted' | 'graded' | 'late' = 'submitted';
+    if (s.score !== null && s.score !== undefined) {
+      status = 'graded';
+    } else if (latestVersion?.isLate) {
+      status = 'late';
     }
+
+    return {
+      id: s.id,
+      assignmentId: s.assignmentId,
+      courseCode,
+      studentId: s.studentId,
+      studentName: s.student?.fullName || '',
+      studentMatric: s.student?.matricNo || s.studentId,
+      version: latestVersion ? latestVersion.version : 1,
+      fileName: latestVersion ? latestVersion.fileName : '',
+      fileUrl: `/api/v1/assignments/${s.assignmentId}/submissions/${s.id}/download`,
+      fileSize: latestVersion ? latestVersion.sizeBytes : 0,
+      submittedAt: latestVersion
+        ? latestVersion.submittedAt.toISOString()
+        : s.createdAt.toISOString(),
+      isLate: latestVersion ? latestVersion.isLate : false,
+      versions,
+      currentVersion,
+      score: s.score !== null ? s.score : undefined,
+      feedback: s.feedback !== null ? s.feedback : undefined,
+      status,
+    };
+  }
+
+  async list(user: SafeUser, query: { courseCode?: string; tab?: string }) {
+    const role = this.auth.effectiveRole(user);
+
+    const assignments = await this.prisma.assignment.findMany({
+      where: query.courseCode && query.courseCode !== 'all'
+        ? { offering: { course: { code: query.courseCode } } }
+        : undefined,
+      include: {
+        offering: {
+          include: {
+            course: { include: { department: true } },
+            lecturers: true,
+          },
+        },
+        submissions: {
+          where: { studentId: user.id },
+          include: { versions: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let items = assignments.filter(
+      (a) => a.status === AssignmentStatus.published || this.canManage(user, a),
+    );
+
+    if (role === Role.student || role === Role.course_rep) {
+      const enrollments = await this.prisma.enrollment.findMany({
+        where: { userId: user.id },
+        select: { offeringId: true },
+      });
+      const enrolledSet = new Set(enrollments.map((e) => e.offeringId));
+      items = items.filter((a) => enrolledSet.has(a.offeringId));
+    }
+
     if (query.tab && query.tab !== 'all') {
       items = items.filter((assignment) => {
-        const submission = this.data.db.submissions.find((s) => s.assignmentId === assignment.id && s.studentId === user.id);
-        const due = new Date(assignment.studentDeadlineExtensions[user.id] ?? assignment.dueDate).getTime();
+        const submission = assignment.submissions[0];
+        const exts = (assignment.studentExtensions as Record<string, string>) || {};
+        const due = new Date(exts[user.id] ?? assignment.deadline).getTime();
+        const isGraded = submission?.score !== null && submission?.score !== undefined;
+
         if (query.tab === 'upcoming') return !submission && due >= Date.now();
-        if (query.tab === 'submitted') return !!submission && submission.status !== 'graded';
-        if (query.tab === 'graded') return submission?.status === 'graded';
+        if (query.tab === 'submitted') return !!submission && !isGraded;
+        if (query.tab === 'graded') return isGraded;
         if (query.tab === 'overdue') return !submission && due < Date.now();
         return true;
       });
     }
-    return items;
+
+    return items.map((a) => this.mapAssignment(a));
   }
 
-  get(id: string, user: User) {
-    const assignment = this.find(id);
-    const ownSubmission = this.data.db.submissions.find((s) => s.assignmentId === id && s.studentId === user.id);
-    return { ...assignment, ownSubmission };
+  async get(id: string, user: SafeUser) {
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        offering: {
+          include: {
+            course: { include: { department: true } },
+            lecturers: true,
+          },
+        },
+        submissions: {
+          where: { studentId: user.id },
+          include: { student: true, versions: true },
+        },
+      },
+    });
+
+    if (!assignment) throw new NotFoundException('Assignment not found');
+
+    const mapped = this.mapAssignment(assignment);
+    const ownSubmission = assignment.submissions[0]
+      ? this.mapSubmission(assignment.submissions[0], mapped.courseCode)
+      : undefined;
+
+    return { ...mapped, ownSubmission };
   }
 
-  async create(user: User, dto: AssignmentDto) {
-    const offering = this.data.db.offerings.find((o) => o.id === dto.offeringId);
+  async create(user: SafeUser, dto: AssignmentDto) {
+    const offering = await this.prisma.offering.findUnique({
+      where: { id: dto.offeringId },
+      include: { lecturers: true },
+    });
+
     if (!offering) throw new BadRequestException('Course offering not found');
-    if (user.role === 'lecturer' && !offering.lecturerIds.includes(user.id)) throw new ForbiddenException('You are not assigned to this course offering');
-    const assignment: Assignment = {
-      id: randomUUID(), ...dto, status: dto.status ?? 'published', createdAt: new Date().toISOString(),
-      lecturerIds: offering.lecturerIds, studentDeadlineExtensions: {},
-    };
-    this.data.db.assignments.unshift(assignment);
-    await this.data.audit(user, 'CREATE_ASSIGNMENT', 'Assignment', assignment.id, assignment.title);
-    return assignment;
+
+    const role = this.auth.effectiveRole(user);
+    if (
+      role === Role.lecturer &&
+      !offering.lecturers.some((l) => l.userId === user.id)
+    ) {
+      throw new ForbiddenException('You are not assigned to this course offering');
+    }
+
+    const assignment = await this.prisma.assignment.create({
+      data: {
+        offeringId: dto.offeringId,
+        title: dto.title,
+        instructions: dto.instructions,
+        deadline: new Date(dto.dueDate),
+        allowLate: dto.allowLate ?? false,
+        allowedTypes: dto.allowedFileTypes || [],
+        maxSizeBytes: dto.maxSizeBytes || 10485760,
+        status: (dto.status as AssignmentStatus) || AssignmentStatus.published,
+      },
+      include: {
+        offering: {
+          include: {
+            course: { include: { department: true } },
+            lecturers: true,
+          },
+        },
+      },
+    });
+
+    await this.audit.log(user, 'CREATE_ASSIGNMENT', 'Assignment', assignment.id, assignment.title);
+    return this.mapAssignment(assignment);
   }
 
-  async submit(id: string, user: User, file: Express.Multer.File) {
+  async submit(id: string, user: SafeUser, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('A submission file is required');
-    const assignment = this.find(id);
-    const isEnrolled = this.data.db.enrollments.some((e) => e.userId === user.id && e.offeringId === assignment.offeringId);
-    if (!isEnrolled) throw new ForbiddenException('You are not enrolled in this course offering');
+
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        offering: {
+          include: {
+            course: { include: { department: true } },
+          },
+        },
+      },
+    });
+
+    if (!assignment) throw new NotFoundException('Assignment not found');
+
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: {
+        offeringId_userId: {
+          offeringId: assignment.offeringId,
+          userId: user.id,
+        },
+      },
+    });
+
+    if (!enrollment) {
+      throw new ForbiddenException('You are not enrolled in this course offering');
+    }
+
     const extension = `.${file.originalname.split('.').pop()?.toLowerCase()}`;
-    if (!assignment.allowedFileTypes.map((t) => t.toLowerCase()).includes(extension)) {
-      throw new BadRequestException(`Allowed file types: ${assignment.allowedFileTypes.join(', ')}`);
+    if (
+      assignment.allowedTypes.length > 0 &&
+      !assignment.allowedTypes.map((t) => t.toLowerCase()).includes(extension)
+    ) {
+      throw new BadRequestException(
+        `Allowed file types: ${assignment.allowedTypes.join(', ')}`,
+      );
     }
-    if (file.size > assignment.maxSizeBytes) throw new BadRequestException('File exceeds the assignment size limit');
-    const due = new Date(assignment.studentDeadlineExtensions[user.id] ?? assignment.dueDate).getTime();
+
+    if (file.size > assignment.maxSizeBytes) {
+      throw new BadRequestException('File exceeds the assignment size limit');
+    }
+
+    const exts = (assignment.studentExtensions as Record<string, string>) || {};
+    const due = new Date(exts[user.id] ?? assignment.deadline).getTime();
     const isLate = Date.now() > due;
-    if (isLate && !assignment.allowLate) throw new ForbiddenException('Submission is locked because the deadline has passed');
-    const checksum = createHash('sha256').update(file.buffer).digest('hex');
-    const timestamp = new Date().toISOString();
-    const fileUrl = `/api/v1/submissions/files/${randomUUID()}/${encodeURIComponent(file.originalname)}`;
-    let submission = this.data.db.submissions.find((s) => s.assignmentId === id && s.studentId === user.id);
-    const version = {
-      version: (submission?.versions.length ?? 0) + 1, fileUrl, fileName: file.originalname,
-      fileSizeBytes: file.size, sha256: checksum, submittedAt: timestamp, isLate,
-    };
-    if (submission) {
-      submission.versions.push(version);
-      Object.assign(submission, { version: version.version, fileName: version.fileName, fileUrl, fileSize: file.size, submittedAt: timestamp, isLate, currentVersion: version, status: isLate ? 'late' : 'submitted', score: undefined, feedback: undefined });
-    } else {
-      submission = {
-        id: randomUUID(), assignmentId: id, courseCode: assignment.courseCode, studentId: user.id,
-        studentName: user.name, studentMatric: user.matricNo ?? user.id, version: 1,
-        fileName: file.originalname, fileUrl, fileSize: file.size, submittedAt: timestamp, isLate,
-        versions: [version], currentVersion: version, status: isLate ? 'late' : 'submitted',
-      };
-      this.data.db.submissions.push(submission);
+
+    if (isLate && !assignment.allowLate) {
+      throw new ForbiddenException(
+        'Submission is locked because the deadline has passed',
+      );
     }
-    // Files are persisted as base64 alongside metadata to keep this starter deployable without object storage.
-    (submission.currentVersion as typeof version & { data?: string }).data = file.buffer.toString('base64');
-    await this.data.save();
-    return { ...submission, receipt: { receiptId: randomUUID(), submissionId: submission.id, fileName: version.fileName, fileSizeBytes: version.fileSizeBytes, sha256: checksum, serverTimestamp: timestamp } };
+
+    const checksum = createHash('sha256').update(file.buffer).digest('hex');
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileKey = `submissions/${assignment.id}/${user.id}/${randomUUID()}-${safeName}`;
+
+    // Store file in StorageService (local disk in uploads/, Cloudflare R2 in prod)
+    await this.storage.putObject(fileKey, file.buffer, file.mimetype);
+
+    const now = new Date();
+
+    // Transaction to upsert submission and create version
+    const { submission, versionRecord } = await this.prisma.$transaction(
+      async (tx) => {
+        let sub = await tx.submission.findUnique({
+          where: {
+            assignmentId_studentId: {
+              assignmentId: id,
+              studentId: user.id,
+            },
+          },
+          include: { versions: true },
+        });
+
+        if (!sub) {
+          sub = await tx.submission.create({
+            data: {
+              assignmentId: id,
+              studentId: user.id,
+            },
+            include: { versions: true },
+          });
+        } else {
+          // Reset score/feedback on new submission version
+          sub = await tx.submission.update({
+            where: { id: sub.id },
+            data: {
+              score: null,
+              feedback: null,
+            },
+            include: { versions: true },
+          });
+        }
+
+        const nextVersion = sub.versions.length + 1;
+        const version = await tx.submissionVersion.create({
+          data: {
+            submissionId: sub.id,
+            version: nextVersion,
+            fileKey,
+            fileName: file.originalname,
+            sizeBytes: file.size,
+            mimeType: file.mimetype || 'application/octet-stream',
+            sha256: checksum,
+            submittedAt: now,
+            isLate,
+          },
+        });
+
+        const fullSub = await tx.submission.findUniqueOrThrow({
+          where: { id: sub.id },
+          include: {
+            student: true,
+            versions: { orderBy: { version: 'asc' } },
+          },
+        });
+
+        return { submission: fullSub, versionRecord: version };
+      },
+    );
+
+    const mapped = this.mapSubmission(submission, assignment.offering.course.code);
+
+    return {
+      ...mapped,
+      receipt: {
+        receiptId: randomUUID(),
+        submissionId: submission.id,
+        fileName: versionRecord.fileName,
+        fileSizeBytes: versionRecord.sizeBytes,
+        sha256: checksum,
+        serverTimestamp: now.toISOString(),
+      },
+    };
   }
 
-  submissions(assignmentId: string, user: User) {
-    const assignment = this.find(assignmentId);
-    if (user.role === 'course_rep') throw new ForbiddenException('Course representatives cannot access submission files');
-    if (user.role === 'student') return this.data.db.submissions.filter((s) => s.assignmentId === assignmentId && s.studentId === user.id);
-    if (!this.canManage(user, assignment)) throw new ForbiddenException('You are not assigned to this course offering');
-    return this.data.db.submissions.filter((s) => s.assignmentId === assignmentId);
+  async submissions(assignmentId: string, user: SafeUser) {
+    const role = this.auth.effectiveRole(user);
+    if (role === Role.course_rep) {
+      throw new ForbiddenException(
+        'Course representatives cannot access submission files',
+      );
+    }
+
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id: assignmentId },
+      include: {
+        offering: {
+          include: {
+            course: true,
+            lecturers: true,
+          },
+        },
+      },
+    });
+
+    if (!assignment) throw new NotFoundException('Assignment not found');
+
+    if (role === Role.student) {
+      const userSubs = await this.prisma.submission.findMany({
+        where: { assignmentId, studentId: user.id },
+        include: { student: true, versions: true },
+      });
+      return userSubs.map((s) =>
+        this.mapSubmission(s, assignment.offering.course.code),
+      );
+    }
+
+    if (!this.canManage(user, assignment)) {
+      throw new ForbiddenException('You are not assigned to this course offering');
+    }
+
+    const subs = await this.prisma.submission.findMany({
+      where: { assignmentId },
+      include: { student: true, versions: true },
+    });
+
+    return subs.map((s) =>
+      this.mapSubmission(s, assignment.offering.course.code),
+    );
   }
 
-  async grade(id: string, user: User, dto: GradeDto) {
-    const submission = this.data.db.submissions.find((s) => s.id === id);
+  async grade(id: string, user: SafeUser, dto: GradeDto) {
+    const submission = await this.prisma.submission.findUnique({
+      where: { id },
+      include: {
+        student: true,
+        assignment: {
+          include: {
+            offering: {
+              include: {
+                course: true,
+                lecturers: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
     if (!submission) throw new NotFoundException('Submission not found');
-    const assignment = this.find(submission.assignmentId);
-    if (!this.canManage(user, assignment)) throw new ForbiddenException('You cannot grade this submission');
-    if (dto.score > assignment.totalMarks) throw new BadRequestException(`Score cannot exceed ${assignment.totalMarks}`);
-    Object.assign(submission, { score: dto.score, feedback: dto.feedback, status: 'graded' });
-    await this.data.audit(user, 'GRADE_SUBMISSION', 'Submission', id, submission.studentMatric);
-    return submission;
+    if (!this.canManage(user, submission.assignment)) {
+      throw new ForbiddenException('You cannot grade this submission');
+    }
+
+    const totalMarks = 100;
+    if (dto.score > totalMarks) {
+      throw new BadRequestException(`Score cannot exceed ${totalMarks}`);
+    }
+
+    const updated = await this.prisma.submission.update({
+      where: { id },
+      data: {
+        score: dto.score,
+        feedback: dto.feedback || null,
+      },
+      include: {
+        student: true,
+        versions: true,
+      },
+    });
+
+    await this.audit.log(
+      user,
+      'GRADE_SUBMISSION',
+      'Submission',
+      id,
+      submission.student.matricNo || submission.student.fullName,
+    );
+
+    return this.mapSubmission(
+      updated,
+      submission.assignment.offering.course.code,
+    );
   }
 
-  async extend(id: string, user: User, dto: ExtendDeadlineDto) {
-    const assignment = this.find(id);
-    if (!this.canManage(user, assignment)) throw new ForbiddenException('You cannot extend this deadline');
-    if (dto.studentId) assignment.studentDeadlineExtensions[dto.studentId] = dto.dueDate;
-    else assignment.dueDate = dto.dueDate;
-    await this.data.audit(user, 'EXTEND_DEADLINE', 'Assignment', id, assignment.title, dto.reason);
-    return assignment;
+  async extend(id: string, user: SafeUser, dto: ExtendDeadlineDto) {
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        offering: {
+          include: {
+            course: true,
+            lecturers: true,
+          },
+        },
+      },
+    });
+
+    if (!assignment) throw new NotFoundException('Assignment not found');
+    if (!this.canManage(user, assignment)) {
+      throw new ForbiddenException('You cannot extend this deadline');
+    }
+
+    const extensions =
+      (assignment.studentExtensions as Record<string, string>) || {};
+    let updatedAssignment: any;
+
+    if (dto.studentId) {
+      extensions[dto.studentId] = dto.dueDate;
+      updatedAssignment = await this.prisma.assignment.update({
+        where: { id },
+        data: { studentExtensions: extensions },
+        include: {
+          offering: {
+            include: {
+              course: { include: { department: true } },
+              lecturers: true,
+            },
+          },
+        },
+      });
+    } else {
+      updatedAssignment = await this.prisma.assignment.update({
+        where: { id },
+        data: { deadline: new Date(dto.dueDate) },
+        include: {
+          offering: {
+            include: {
+              course: { include: { department: true } },
+              lecturers: true,
+            },
+          },
+        },
+      });
+    }
+
+    await this.audit.log(
+      user,
+      'EXTEND_DEADLINE',
+      'Assignment',
+      id,
+      assignment.title,
+      dto.reason,
+    );
+
+    return this.mapAssignment(updatedAssignment);
   }
 
-  headcount(id: string, _user: User) {
-    const assignment = this.find(id);
-    const enrollmentIds = this.data.db.enrollments.filter((e) => e.offeringId === assignment.offeringId).map((e) => e.userId);
-    const students = this.data.db.users.filter((u) => enrollmentIds.includes(u.id));
-    const submissions = this.data.db.submissions.filter((s) => s.assignmentId === id);
+  async headcount(id: string, _user: SafeUser) {
+    const assignment = await this.prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        offering: {
+          include: {
+            enrollments: {
+              include: { user: true },
+            },
+          },
+        },
+        submissions: {
+          include: {
+            student: true,
+            versions: { orderBy: { version: 'desc' } },
+          },
+        },
+      },
+    });
+
+    if (!assignment) throw new NotFoundException('Assignment not found');
+
+    const students = assignment.offering.enrollments.map((e) => e.user);
+    const submissions = assignment.submissions;
+
     return {
       total: students.length,
       submittedCount: submissions.length,
-      submitted: submissions.map((s) => ({ name: s.studentName, matric: s.studentMatric, submittedAt: s.submittedAt })),
-      notSubmitted: students.filter((student) => !submissions.some((s) => s.studentId === student.id)).map((s) => ({ name: s.name, matric: s.matricNo })),
+      submitted: submissions.map((s) => ({
+        name: s.student.fullName,
+        matric: s.student.matricNo || s.student.id,
+        submittedAt: s.versions[0]?.submittedAt.toISOString() || s.createdAt.toISOString(),
+      })),
+      notSubmitted: students
+        .filter((st) => !submissions.some((sub) => sub.studentId === st.id))
+        .map((st) => ({
+          name: st.fullName,
+          matric: st.matricNo || st.id,
+        })),
     };
   }
 
-  private find(id: string) {
-    const assignment = this.data.db.assignments.find((a) => a.id === id);
-    if (!assignment) throw new NotFoundException('Assignment not found');
-    return assignment;
+  async getSubmissionFile(
+    assignmentId: string,
+    submissionId: string,
+    user: SafeUser,
+  ) {
+    const role = this.auth.effectiveRole(user);
+    if (role === Role.course_rep) {
+      throw new ForbiddenException(
+        'Course representatives cannot access submission files',
+      );
+    }
+
+    const submission = await this.prisma.submission.findUnique({
+      where: { id: submissionId },
+      include: {
+        assignment: {
+          include: {
+            offering: {
+              include: {
+                lecturers: true,
+                course: { include: { department: true } },
+              },
+            },
+          },
+        },
+        student: true,
+        versions: { orderBy: { version: 'desc' } },
+      },
+    });
+
+    if (!submission) throw new NotFoundException('Submission not found');
+    if (assignmentId && submission.assignmentId !== assignmentId) {
+      throw new NotFoundException('Submission not found for this assignment');
+    }
+
+    if (role === Role.student && submission.studentId !== user.id) {
+      throw new ForbiddenException(
+        "You cannot download another student's submission",
+      );
+    }
+
+    if (role === Role.lecturer) {
+      const isAssigned = submission.assignment.offering.lecturers.some(
+        (l) => l.userId === user.id,
+      );
+      if (!isAssigned) {
+        throw new ForbiddenException('You are not assigned to this course offering');
+      }
+    }
+
+    if (role === Role.hod) {
+      const deptId = submission.assignment.offering.course.departmentId;
+      if (user.departmentId && deptId !== user.departmentId) {
+        throw new ForbiddenException(
+          'HOD cannot access submissions outside their department',
+        );
+      }
+    }
+
+    const latestVersion = submission.versions[0];
+    if (!latestVersion) {
+      throw new NotFoundException('Submission has no uploaded files');
+    }
+
+    const fileBuffer = await this.storage.getObject(latestVersion.fileKey);
+    return {
+      buffer: fileBuffer,
+      fileName: latestVersion.fileName,
+      mimeType: latestVersion.mimeType,
+      sizeBytes: latestVersion.sizeBytes,
+    };
   }
-  private canManage(user: User, assignment: Assignment) {
-    return ['admin', 'hod'].includes(user.role) || (user.role === 'lecturer' && assignment.lecturerIds.includes(user.id));
+
+  private canManage(user: SafeUser, assignment: any) {
+    const role = this.auth.effectiveRole(user);
+    if (role === Role.admin) return true;
+    if (role === Role.hod) {
+      const deptId = assignment.offering?.course?.departmentId;
+      return !user.departmentId || !deptId || deptId === user.departmentId;
+    }
+    if (role === Role.lecturer) {
+      const lecturerIds = assignment.offering?.lecturers?.map((l: any) => l.userId) || [];
+      return lecturerIds.includes(user.id);
+    }
+    return false;
   }
 }

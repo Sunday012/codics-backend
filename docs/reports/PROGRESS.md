@@ -33,19 +33,19 @@
 - [x] Write `docs/reports/R0-lite.md`
 - [x] Commit Phase A
 
-## Phase B: Postgres via Prisma 7.10.0 (Deferred until local Postgres is available)
-- [ ] B0. Local docker-compose Postgres 16 & PrismaService runtime proof (`GET /health/db`)
-- [ ] B1. Schema in `prisma/schema.prisma`
-- [ ] B2. Migrations, append-only AuditLog trigger, RLS + revoke permissions
-- [ ] B3. Repository layer & services ported to Prisma
-- [ ] B4. Database-backed auth (ActivationCode, RefreshToken family/reuse, PasswordReset)
-- [ ] B5. Business rules (Past questions upload permission matrix, notice moderation)
-- [ ] B6. StorageService with local disk driver and download routes
-- [ ] B7. Environment-guarded seed (`prisma/seed.ts`)
-- [ ] B8. Migration scripts (`db:migrate`, `db:seed`, `db:deploy:supabase`)
-- [ ] B9. Full test suite (ported e2e + security/permission matrix tests)
-- [ ] Write `docs/reports/R1.md`
-- [ ] Commit Phase B
+## Phase B: Postgres via Prisma 7.10.0 (Native Local Postgres on 127.0.0.1:5432)
+- [x] B0. Local docker-compose Postgres 16 config & PrismaService runtime proof (`GET /health/db`)
+- [x] B1. Schema in `prisma/schema.prisma` (21 models, relations, indexes, enums)
+- [x] B2. Migrations, append-only AuditLog trigger, RLS + revoke permissions
+- [x] B3. Repository layer & services ported to Prisma
+- [x] B4. Database-backed auth (ActivationCode, RefreshToken family/reuse, PasswordReset)
+- [x] B5. Business rules (Past questions upload permission matrix, notice moderation)
+- [x] B6. StorageService with local disk driver and download routes
+- [x] B7. Environment-guarded seed (`prisma/seed.ts`)
+- [x] B8. Migration scripts (`db:migrate`, `db:seed`, `db:deploy:supabase`)
+- [x] B9. Full test suite (ported e2e + security/permission matrix tests)
+- [x] Write `docs/reports/R1.md`
+- [x] Commit Phase B
 
 ## Phase C: Apply to Supabase Dev (Post-Phase B)
 - [ ] C1. Run `db:deploy:supabase` against Supabase dev project
