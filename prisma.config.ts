@@ -1,13 +1,23 @@
 import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
+function formatUrl(rawUrl: string | undefined): string {
+  if (!rawUrl) return '';
+  const isLocal = rawUrl.includes('localhost') || rawUrl.includes('127.0.0.1');
+  if (!isLocal && !rawUrl.includes('sslmode=')) {
+    return `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}sslmode=require`;
+  }
+  return rawUrl;
+}
+
+const directUrl =
+  process.env.DIRECT_URL ||
+  process.env.DATABASE_URL ||
+  'postgresql://codics:codics@127.0.0.1:5432/codics?schema=public';
+
 export default defineConfig({
   schema: 'prisma/schema.prisma',
-  migrations: {
-    path: 'prisma/migrations',
-    seed: 'ts-node prisma/seed.ts',
-  },
   datasource: {
-    url: process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? 'postgresql://codics:codics@localhost:5433/codics',
+    url: formatUrl(directUrl),
   },
 });

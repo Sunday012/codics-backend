@@ -1,15 +1,27 @@
 import { Controller, Get } from '@nestjs/common';
 import { Public } from './auth/auth.decorators';
-import { PrismaService } from './database/prisma.service';
+import { PrismaService } from './prisma/prisma.service';
 
 @Controller('health')
 export class HealthController {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   @Public()
   @Get()
-  async check() {
-    await this.prisma.$queryRawUnsafe('SELECT 1');
-    return { status: 'ok', service: 'codics-api', database: 'connected', timestamp: new Date().toISOString() };
+  check() {
+    return { status: 'ok', service: 'codics-api', timestamp: new Date().toISOString() };
+  }
+
+  @Public()
+  @Get('time')
+  getTime() {
+    return { now: new Date().toISOString() };
+  }
+
+  @Public()
+  @Get('db')
+  async checkDb() {
+    await this.prisma.$queryRawUnsafe('SELECT 1 as result;');
+    return { status: 'ok', database: 'connected' };
   }
 }

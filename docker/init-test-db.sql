@@ -1,0 +1,2 @@
+CREATE DATABASE codics_test;
+GRANT ALL PRIVILEGES ON DATABASE codics_test TO codics;

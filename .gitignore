@@ -1,5 +1,9 @@
 node_modules/
 dist/
 .env
+.env.*
+.env.backup
+data/
+uploads/
 coverage/
-src/generated/prisma/
+*.tsbuildinfo

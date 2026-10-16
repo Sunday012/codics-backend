@@ -1,4 +1,5 @@
 import { IsEmail, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsStrongPasswordRules } from '../common/password.util';
 
 export class LoginDto {
   @IsString()
@@ -10,8 +11,14 @@ export class LoginDto {
 }
 
 export class RefreshDto {
+  @IsOptional()
   @IsString()
-  refreshToken!: string;
+  refreshToken?: string;
+}
+
+export class ActivateLookupDto {
+  @Matches(/^[A-Z]{2,4}\/\d{4}\/\d{3,4}$/i)
+  matricNo!: string;
 }
 
 export class ActivateDto {
@@ -23,10 +30,29 @@ export class ActivateDto {
   activationCode!: string;
 
   @IsString()
-  @MinLength(8)
+  @IsStrongPasswordRules()
   password!: string;
 
   @IsOptional()
   @IsEmail()
   email?: string;
+}
+
+export class ForgotPasswordDto {
+  @IsOptional()
+  @IsString()
+  identifier?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  token!: string;
+
+  @IsString()
+  @IsStrongPasswordRules()
+  newPassword!: string;
 }

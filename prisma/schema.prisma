@@ -1,289 +1,495 @@
+// CODICS Prisma Schema
+// Prisma 7.10.0
+
 generator client {
-  provider               = "prisma-client"
-  output                 = "../src/generated/prisma"
-  moduleFormat           = "cjs"
-  generatedFileExtension = "ts"
-  importFileExtension    = ""
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
 }
 
+enum Role {
+  admin
+  hod
+  lecturer
+  course_rep
+  student
+}
+
+enum UserStatus {
+  invited
+  active
+  suspended
+}
+
+enum Semester {
+  first
+  second
+}
+
+enum EnrollmentType {
+  regular
+  carryover
+  elective
+}
+
+enum MaterialType {
+  pdf
+  slides
+  note
+  link
+}
+
+enum MaterialStatus {
+  draft
+  published
+}
+
+enum AudienceScope {
+  faculty
+  department
+  level
+  course
+}
+
+enum AssignmentStatus {
+  draft
+  published
+  closed
+}
+
+enum ExamType {
+  first_semester
+  second_semester
+  mid_semester
+  test
+}
+
+enum PastQuestionStatus {
+  pending
+  approved
+  rejected
+}
+
+enum ReportStatus {
+  pending
+  reviewed
+  dismissed
+}
+
+enum RoleScopeType {
+  faculty
+  department
+  level
+  course
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users   User[]
+  courses Course[]
+}
+
+model Setting {
+  id        String   @id @default(uuid())
+  session   String
+  semester  Semester
+  updatedAt DateTime @updatedAt
+}
+
 model User {
-  id               String    @id @default(uuid()) @db.Uuid
-  name             String
-  email            String    @unique
-  passwordHash     String
-  role             String
-  department       String
-  level            String
-  matricNo         String?   @unique
-  staffId          String?   @unique
-  avatar           String    @default("")
-  status           String    @default("invited")
-  repTermEndDate   DateTime? @db.Date
-  refreshTokenHash String?
-  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+  id             String     @id @default(uuid())
+  email          String?    @unique
+  matricNo       String?    @unique
+  staffId        String?    @unique
+  fullName       String
+  passwordHash   String?
+  role           Role       @default(student)
+  departmentId   String?
+  level          Int?
+  status         UserStatus @default(invited)
+  repTermStart   DateTime?
+  repTermEnd     DateTime?
+  activatedAt    DateTime?
+  lastLoginAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
-  enrollments     Enrollment[]
-  noticeReads     NoticeRead[]
-  uploadedPapers  PastQuestion[]
-  submittedWork   Submission[]
-  roleAssignments RoleAssignment[]
+  department          Department?          @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  enrollments         Enrollment[]
+  lecturerOfferings   OfferingLecturer[]
+  authoredNotices     Notice[]             @relation("AuthoredNotices")
+  noticeReads         NoticeRead[]
+  submissions         Submission[]
+  uploadedPQs         PastQuestion[]       @relation("UploadedPQs")
+  approvedPQs         PastQuestion[]       @relation("ApprovedPQs")
+  pqReports           PastQuestionReport[]
+  roleAssignments     RoleAssignment[]     @relation("UserRoleAssignments")
+  createdAssignments RoleAssignment[]     @relation("CreatedRoleAssignments")
+  refreshTokens       RefreshToken[]
+  activationCodes     ActivationCode[]
+  passwordResets      PasswordReset[]
+  auditLogs           AuditLog[]
 
-  @@index([department, level])
-  @@index([role, status])
-}
-
-model Notice {
-  id               String       @id @default(uuid()) @db.Uuid
-  title            String
-  content          String
-  category         String
-  scope            String
-  authorId         String       @db.Uuid
-  authorName       String
-  authorRole       String
-  isUrgent         Boolean      @default(false)
-  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime     @updatedAt @db.Timestamptz(3)
-  targetLevel      String?
-  targetDepartment String?
-  courseCode       String?
-  isHidden         Boolean      @default(false)
-  hiddenReason     String?
-  reads            NoticeRead[]
-
-  @@index([createdAt(sort: Desc)])
-  @@index([scope, targetDepartment, targetLevel])
-}
-
-model NoticeRead {
-  noticeId String   @db.Uuid
-  userId   String   @db.Uuid
-  readAt   DateTime @default(now()) @db.Timestamptz(3)
-  notice   Notice   @relation(fields: [noticeId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@id([noticeId, userId])
+  @@index([departmentId])
+  @@index([role])
+  @@index([status])
 }
 
 model Course {
-  id            String         @id @default(uuid()) @db.Uuid
-  code          String         @unique
-  title         String
-  unit          Int
-  department    String
-  level         String
-  description   String
-  offerings     Offering[]
-  enrollments   Enrollment[]
-  assignments   Assignment[]
-  pastQuestions PastQuestion[]
+  id           String   @id @default(uuid())
+  code         String   @unique
+  title        String
+  units        Int
+  departmentId String
+  level        Int
+  semester     Semester
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  @@index([department, level])
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  offerings  Offering[]
+
+  @@index([departmentId])
+  @@index([level, semester])
 }
 
 model Offering {
-  id            String         @id @default(uuid()) @db.Uuid
-  courseId      String         @db.Uuid
-  courseCode    String
-  session       String
-  semester      String
-  lecturerIds   String[]       @default([])
-  lecturerNames String[]       @default([])
-  course        Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  enrollments   Enrollment[]
-  modules       CourseModule[]
-  materials     Material[]
-  assignments   Assignment[]
+  id        String   @id @default(uuid())
+  courseId  String
+  session   String
+  semester  Semester
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  course      Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lecturers   OfferingLecturer[]
+  enrollments Enrollment[]
+  modules     Module[]
+  materials   Material[]
+  assignments Assignment[]
 
   @@unique([courseId, session, semester])
+  @@index([courseId])
   @@index([session, semester])
 }
 
-model Enrollment {
-  id         String   @id @default(uuid()) @db.Uuid
-  userId     String   @db.Uuid
-  offeringId String   @db.Uuid
-  courseId   String   @db.Uuid
-  courseCode String
-  type       String
-  session    String
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  offering   Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
-  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+model OfferingLecturer {
+  id         String   @id @default(uuid())
+  offeringId String
+  userId     String
+  createdAt  DateTime @default(now())
 
-  @@unique([userId, offeringId])
-  @@index([courseId, session])
+  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([offeringId, userId])
+  @@index([offeringId])
+  @@index([userId])
 }
 
-model CourseModule {
-  id          String     @id @default(uuid()) @db.Uuid
-  offeringId  String     @db.Uuid
+model Enrollment {
+  id         String         @id @default(uuid())
+  offeringId String
+  userId     String
+  type       EnrollmentType @default(regular)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([offeringId, userId])
+  @@index([offeringId])
+  @@index([userId])
+}
+
+model Module {
+  id          String    @id @default(uuid())
+  offeringId  String
   title       String
   order       Int
   weekNumber  Int?
   description String?
-  offering    Offering   @relation(fields: [offeringId], references: [id], onDelete: Cascade)
-  materials   Material[]
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  @@unique([offeringId, order])
+  offering  Offering   @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  materials Material[]
+
+  @@index([offeringId])
+  @@index([deletedAt])
 }
 
 model Material {
-  id            String       @id @default(uuid()) @db.Uuid
-  moduleId      String       @db.Uuid
-  offeringId    String       @db.Uuid
-  title         String
-  type          String
-  contentOrUrl  String
-  fileSizeBytes Int?
-  status        String       @default("draft")
-  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime     @updatedAt @db.Timestamptz(3)
-  module        CourseModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  offering      Offering     @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  id         String         @id @default(uuid())
+  moduleId   String
+  offeringId String
+  type       MaterialType
+  title      String
+  status     MaterialStatus @default(draft)
+  fileKey    String?
+  fileName   String?
+  sizeBytes  Int?
+  url        String?
+  body       String?
+  deletedAt  DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
 
-  @@index([offeringId, status])
+  module   Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+
+  @@index([moduleId])
+  @@index([offeringId])
+  @@index([deletedAt])
+  @@index([status])
+}
+
+model Notice {
+  id                   String        @id @default(uuid())
+  authorId             String
+  title                String
+  body                 String
+  scope                AudienceScope
+  targetDepartmentCode String?
+  targetLevel          Int?
+  targetCourseCode     String?
+  isUrgent             Boolean       @default(false)
+  isHidden             Boolean       @default(false)
+  hiddenReason         String?
+  hiddenBy             String?
+  hiddenAt             DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  author User         @relation("AuthoredNotices", fields: [authorId], references: [id], onDelete: Cascade)
+  reads  NoticeRead[]
+
+  @@index([authorId])
+  @@index([scope])
+  @@index([targetDepartmentCode])
+  @@index([targetLevel])
+  @@index([targetCourseCode])
+  @@index([isHidden])
+  @@index([createdAt])
+}
+
+model NoticeRead {
+  id        String   @id @default(uuid())
+  noticeId  String
+  userId    String
+  readAt    DateTime @default(now())
+
+  notice Notice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([noticeId, userId])
+  @@index([noticeId])
+  @@index([userId])
 }
 
 model Assignment {
-  id                        String       @id @default(uuid()) @db.Uuid
-  courseId                  String       @db.Uuid
-  offeringId                String       @db.Uuid
-  courseCode                String
-  department                String
-  level                     String
-  title                     String
-  instructions              String
-  dueDate                   DateTime     @db.Timestamptz(3)
-  totalMarks                Int
-  createdAt                 DateTime     @default(now()) @db.Timestamptz(3)
-  status                    String       @default("published")
-  allowedFileTypes          String[]     @default([])
-  maxSizeBytes              Int
-  allowLate                 Boolean      @default(false)
-  lecturerIds               String[]     @default([])
-  studentDeadlineExtensions Json         @default("{}")
-  course                    Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  offering                  Offering     @relation(fields: [offeringId], references: [id], onDelete: Cascade)
-  submissions               Submission[]
+  id                 String           @id @default(uuid())
+  offeringId         String
+  title              String
+  instructions       String
+  deadline           DateTime
+  allowLate          Boolean          @default(false)
+  allowedTypes       String[]
+  maxSizeBytes       Int              @default(10485760)
+  status             AssignmentStatus @default(draft)
+  studentExtensions  Json?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
 
-  @@index([offeringId, dueDate])
+  offering    Offering     @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  submissions Submission[]
+
+  @@index([offeringId])
+  @@index([deadline])
   @@index([status])
 }
 
 model Submission {
-  id             String     @id @default(uuid()) @db.Uuid
-  assignmentId   String     @db.Uuid
-  courseCode     String
-  studentId      String     @db.Uuid
-  studentName    String
-  studentMatric  String
-  version        Int
-  fileName       String
-  fileUrl        String
-  fileSize       Int
-  fileData       Bytes
-  submittedAt    DateTime   @db.Timestamptz(3)
-  isLate         Boolean
-  versions       Json
-  currentVersion Json
-  score          Float?
-  feedback       String?
-  status         String
-  assignment     Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  student        User       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  id           String   @id @default(uuid())
+  assignmentId String
+  studentId    String
+  score        Float?
+  feedback     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignment Assignment          @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student    User                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  versions   SubmissionVersion[]
 
   @@unique([assignmentId, studentId])
-  @@index([assignmentId, status])
+  @@index([assignmentId])
+  @@index([studentId])
+}
+
+model SubmissionVersion {
+  id           String   @id @default(uuid())
+  submissionId String
+  version      Int
+  fileKey      String
+  fileName     String
+  sizeBytes    Int
+  mimeType     String
+  sha256       String
+  submittedAt  DateTime @default(now())
+  isLate       Boolean  @default(false)
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, version])
+  @@index([submissionId])
 }
 
 model PastQuestion {
-  id              String               @id @default(uuid()) @db.Uuid
-  courseId        String               @db.Uuid
+  id              String             @id @default(uuid())
+  uploaderId      String
   courseCode      String
-  courseTitle     String
-  department      String
-  level           String
   session         String
-  semester        String
-  examType        String
-  fileUrl         String
-  fileName        String
-  uploaderId      String               @db.Uuid
-  uploaderName    String
-  status          String               @default("pending")
-  uploadedAt      DateTime             @default(now()) @db.Timestamptz(3)
-  reviewedBy      String?
+  semester        Semester
+  examType        ExamType
+  fileKey         String?
+  fileName        String?
+  sizeBytes       Int?
+  mimeType        String?
+  sha256          String?
+  status          PastQuestionStatus @default(pending)
   rejectionReason String?
-  course          Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  uploader        User                 @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
-  reports         PastQuestionReport[]
+  approvedBy      String?
+  deletedAt       DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
-  @@index([status, department])
-  @@index([courseCode, session, semester, examType])
+  uploader   User                 @relation("UploadedPQs", fields: [uploaderId], references: [id], onDelete: Cascade)
+  approver   User?                @relation("ApprovedPQs", fields: [approvedBy], references: [id], onDelete: SetNull)
+  reports    PastQuestionReport[]
+
+  @@index([uploaderId])
+  @@index([courseCode])
+  @@index([session, semester])
+  @@index([status])
+  @@index([deletedAt])
+  // Note: Partial unique index (courseCode, session, semester, examType) WHERE deletedAt IS NULL
+  // is added via migration SQL step.
 }
 
 model PastQuestionReport {
-  id             String       @id @default(uuid()) @db.Uuid
-  pastQuestionId String       @db.Uuid
-  reportedBy     String       @db.Uuid
+  id             String       @id @default(uuid())
+  pastQuestionId String
+  reportedBy     String
   reason         String
   note           String?
-  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
-  pastQuestion   PastQuestion @relation(fields: [pastQuestionId], references: [id], onDelete: Cascade)
+  status         ReportStatus @default(pending)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  @@unique([pastQuestionId, reportedBy])
+  pastQuestion PastQuestion @relation(fields: [pastQuestionId], references: [id], onDelete: Cascade)
+  reporter     User         @relation(fields: [reportedBy], references: [id], onDelete: Cascade)
+
+  @@index([pastQuestionId])
+  @@index([reportedBy])
+  @@index([status])
 }
 
 model RoleAssignment {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @db.Uuid
-  userName  String
-  role      String
-  scopeType String
-  scopeId   String
-  scopeName String
-  validFrom DateTime @db.Date
-  validTo   DateTime @db.Date
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String        @id @default(uuid())
+  userId      String
+  role        Role
+  scopeType   RoleScopeType
+  scopeId     String
+  validFrom   DateTime
+  validTo     DateTime
+  createdBy   String
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
-  @@index([role, isActive, validTo])
+  user    User @relation("UserRoleAssignments", fields: [userId], references: [id], onDelete: Cascade)
+  creator User @relation("CreatedRoleAssignments", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([role])
+  @@index([scopeType, scopeId])
+  @@index([isActive, validTo])
 }
 
-model AuditEntry {
-  id         String   @id @default(uuid()) @db.Uuid
-  actorId    String   @db.Uuid
-  actorName  String
-  actorRole  String
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actorName  String?
+  actorRole  String?
   action     String
   targetType String
   targetId   String
-  targetName String
+  targetName String?
   reason     String?
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  metadata   Json?
+  createdAt  DateTime @default(now())
 
-  @@index([createdAt(sort: Desc)])
-  @@index([actorRole, action])
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
 }
 
-model Department {
-  id       String  @id @default(uuid()) @db.Uuid
-  name     String  @unique
-  code     String  @unique
-  isActive Boolean @default(true)
+model RefreshToken {
+  id           String    @id @default(uuid())
+  userId       String
+  familyId     String
+  tokenHash    String
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+  userAgent    String?
+  ip           String?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([tokenHash])
 }
 
-model AcademicSettings {
-  id        String   @id @default("default")
-  session   String
-  semester  String
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+model ActivationCode {
+  id        String    @id @default(uuid())
+  userId    String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
 }
