@@ -48,6 +48,8 @@
 - [x] Commit Phase B
 
 ## Phase C: Apply to Supabase Dev (Post-Phase B)
-- [ ] C1. Run `db:deploy:supabase` against Supabase dev project
-- [ ] C2. Verification (RLS, privileges, audit trigger, runtime read/write)
-- [ ] Write `docs/reports/FINAL.md`
+- [x] C1. Run `db:deploy:supabase` against Supabase dev project
+- [x] C2. Verification (RLS, privileges, audit trigger, runtime read/write)
+- [x] Update `README.md`
+- [x] Write `docs/reports/FINAL.md`
+- [x] Commit Phase C
