@@ -13,7 +13,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "db:migrate": "prisma migrate dev",
     "db:seed": "ts-node prisma/seed.ts",
-    "db:deploy:supabase": "node scripts/deploy-supabase.js"
+    "db:deploy:supabase": "node scripts/deploy-supabase.js",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { defineConfig, env } from 'prisma/config';
+import { defineConfig } from 'prisma/config';
 
 function formatUrl(rawUrl: string | undefined): string {
   if (!rawUrl) return '';
@@ -10,7 +10,10 @@ function formatUrl(rawUrl: string | undefined): string {
   return rawUrl;
 }
 
-const directUrl = env('DIRECT_URL');
+const directUrl =
+  process.env.DIRECT_URL ||
+  process.env.DATABASE_URL ||
+  'postgresql://codics:codics@127.0.0.1:5432/codics?schema=public';
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
