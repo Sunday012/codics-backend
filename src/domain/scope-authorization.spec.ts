@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { CoursesService } from './courses.service';
 import { AssignmentsService } from './assignments.service';
