@@ -12,7 +12,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   AdjustAttendanceRecordDto,
   AttendanceRecordStatusDto,
-  AttendanceSessionStatusDto,
   CheckInDto,
   CreateAttendanceSessionDto,
   ManualAttendanceRecordDto,
