@@ -85,6 +85,23 @@ enum RoleScopeType {
   course
 }
 
+enum AttendanceSessionStatus {
+  open
+  closed
+}
+
+enum AttendanceRecordStatus {
+  present
+  late
+  absent
+  excused
+}
+
+enum AttendanceRecordSource {
+  self
+  manual
+}
+
 model Department {
   id        String   @id @default(uuid())
   code      String   @unique
@@ -136,6 +153,11 @@ model User {
   activationCodes     ActivationCode[]
   passwordResets      PasswordReset[]
   auditLogs           AuditLog[]
+  createdAttendanceSessions AttendanceSession[]    @relation("CreatedAttendanceSessions")
+  attendanceRecords         AttendanceRecord[]      @relation("StudentAttendanceRecords")
+  adjustedAttendance        AttendanceAdjustment[]  @relation("AdjustedAttendanceRecords")
+  createdCalendarEvents     CalendarEvent[]         @relation("CreatedCalendarEvents")
+  createdTimetableExceptions TimetableException[]   @relation("CreatedTimetableExceptions")
 
   @@index([departmentId])
   @@index([role])
@@ -174,6 +196,8 @@ model Offering {
   modules     Module[]
   materials   Material[]
   assignments Assignment[]
+  attendanceSessions AttendanceSession[]
+  timetableSlots     TimetableSlot[]
 
   @@unique([courseId, session, semester])
   @@index([courseId])
@@ -493,3 +517,149 @@ model PasswordReset {
   @@index([userId])
   @@index([tokenHash])
 }
+
+model AttendanceSession {
+  id           String                  @id @default(uuid())
+  offeringId   String
+  createdBy    String
+  startsAt     DateTime
+  closesAt     DateTime
+  lateAfterMin Int                     @default(15)
+  rotateSec    Int                     @default(30)
+  status       AttendanceSessionStatus @default(open)
+  secret       String
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  offering Offering           @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  creator  User               @relation("CreatedAttendanceSessions", fields: [createdBy], references: [id], onDelete: Cascade)
+  records  AttendanceRecord[]
+
+  @@index([offeringId])
+  @@index([createdBy])
+  @@index([status])
+  @@index([startsAt])
+}
+
+model AttendanceRecord {
+  id          String                 @id @default(uuid())
+  sessionId   String
+  studentId   String
+  status      AttendanceRecordStatus @default(present)
+  checkedInAt DateTime               @default(now())
+  source      AttendanceRecordSource @default(self)
+  reason      String?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  session     AttendanceSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student     User                   @relation("StudentAttendanceRecords", fields: [studentId], references: [id], onDelete: Cascade)
+  adjustments AttendanceAdjustment[]
+
+  @@unique([sessionId, studentId])
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([status])
+  @@index([checkedInAt])
+}
+
+model AttendanceAdjustment {
+  id         String                 @id @default(uuid())
+  recordId   String
+  fromStatus AttendanceRecordStatus
+  toStatus   AttendanceRecordStatus
+  reason     String
+  adjustedBy String
+  createdAt  DateTime               @default(now())
+
+  record   AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  adjuster User             @relation("AdjustedAttendanceRecords", fields: [adjustedBy], references: [id], onDelete: Cascade)
+
+  @@index([recordId])
+  @@index([adjustedBy])
+  @@index([createdAt])
+}
+
+model AcademicPeriod {
+  id        String   @id @default(uuid())
+  sessionId String   // e.g. '2025/2026'
+  title     String
+  type      String   // orientation, registration, lectures, exams, break, holiday, other
+  start     String   // YYYY-MM-DD
+  end       String   // YYYY-MM-DD
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sessionId])
+  @@index([type])
+  @@index([start, end])
+}
+
+model TimetableSlot {
+  id         String   @id @default(uuid())
+  offeringId String
+  weekday    Int      // 1 = Monday ... 7 = Sunday
+  startTime  String   // HH:mm
+  endTime    String   // HH:mm
+  venue      String
+  kind       String   @default("lecture") // lecture, practical, tutorial
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  offering   Offering             @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  exceptions TimetableException[]
+
+  @@index([offeringId])
+  @@index([weekday])
+}
+
+model TimetableException {
+  id        String   @id @default(uuid())
+  slotId    String
+  date      String   // YYYY-MM-DD
+  kind      String   // cancelled, moved
+  newVenue  String?
+  newTime   String?
+  note      String?
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slot    TimetableSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  creator User          @relation("CreatedTimetableExceptions", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([slotId])
+  @@index([date])
+  @@index([createdBy])
+}
+
+model CalendarEvent {
+  id               String        @id @default(uuid())
+  title            String
+  type             String        // exam, event, meeting, other
+  start            DateTime
+  end              DateTime
+  allDay           Boolean       @default(false)
+  location         String?
+  courseId         String?
+  courseCode       String?
+  scope            AudienceScope @default(faculty)
+  targetDepartment String?
+  targetLevel      Int?
+  createdBy        String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  creator User @relation("CreatedCalendarEvents", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([start, end])
+  @@index([scope])
+  @@index([type])
+  @@index([courseCode])
+  @@index([targetDepartment])
+  @@index([targetLevel])
+  @@index([createdBy])
+}
+
+
