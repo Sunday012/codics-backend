@@ -11,6 +11,7 @@ import { AuditService } from '../common/audit.service';
 import { toSafeUser } from '../common/user.util';
 import { Role, UserStatus, Semester, RoleScopeType, EnrollmentType, Prisma } from '@prisma/client';
 import {
+  BulkStudentImportDto,
   DepartmentDto,
   EnrollmentDto,
   RoleAssignmentDto,
@@ -186,6 +187,18 @@ export class AdminService {
       include: { department: true },
     });
 
+    if (
+      existing &&
+      actor.role === Role.hod &&
+      actor.departmentId &&
+      existing.departmentId &&
+      existing.departmentId !== actor.departmentId
+    ) {
+      throw new ForbiddenException(
+        'HOD cannot modify a student belonging to another department',
+      );
+    }
+
     let student: any;
     if (existing) {
       student = await this.prisma.user.update({
@@ -226,6 +239,193 @@ export class AdminService {
     );
 
     return toSafeUser(student);
+  }
+
+  async bulkUpsertStudents(
+    actor: { id: string; fullName: string; role: Role; departmentId?: string | null },
+    dto: BulkStudentImportDto,
+  ) {
+    if (!dto.students || dto.students.length === 0) {
+      throw new BadRequestException('At least one student record is required for bulk import');
+    }
+
+    if (dto.students.length > 500) {
+      throw new BadRequestException('Bulk import batch size cannot exceed 500 students per request');
+    }
+
+    const departments = await this.prisma.department.findMany();
+    const deptMap = new Map<string, any>();
+    for (const d of departments) {
+      deptMap.set(d.name.toLowerCase(), d);
+      deptMap.set(d.code.toLowerCase(), d);
+      deptMap.set(d.id, d);
+    }
+
+    const created: any[] = [];
+    const updated: any[] = [];
+    const rejected: Array<{ matricNo: string; row: number; reason: string }> = [];
+    let skipped = 0;
+
+    const seenMatricsInBatch = new Set<string>();
+    const validRows: Array<{
+      rowNumber: number;
+      matricNo: string;
+      fullName: string;
+      deptId: string;
+      level: number;
+      email?: string;
+      status: UserStatus;
+    }> = [];
+
+    for (let i = 0; i < dto.students.length; i++) {
+      const row = dto.students[i];
+      const rowNumber = i + 1;
+      const normalizedMatric = row.matricNo?.trim().toUpperCase();
+
+      if (!normalizedMatric) {
+        rejected.push({ matricNo: '', row: rowNumber, reason: 'Matric number is required' });
+        continue;
+      }
+
+      if (seenMatricsInBatch.has(normalizedMatric)) {
+        if (dto.skipDuplicates) {
+          skipped++;
+          continue;
+        } else {
+          rejected.push({
+            matricNo: normalizedMatric,
+            row: rowNumber,
+            reason: 'Duplicate matric number in import payload',
+          });
+          continue;
+        }
+      }
+      seenMatricsInBatch.add(normalizedMatric);
+
+      const dept = deptMap.get(row.department?.trim().toLowerCase());
+      if (!dept) {
+        rejected.push({
+          matricNo: normalizedMatric,
+          row: rowNumber,
+          reason: `Department '${row.department}' not recognized`,
+        });
+        continue;
+      }
+
+      if (actor.role === Role.hod && actor.departmentId && dept.id !== actor.departmentId) {
+        rejected.push({
+          matricNo: normalizedMatric,
+          row: rowNumber,
+          reason: 'HOD cannot import students outside their assigned department',
+        });
+        continue;
+      }
+
+      const levelNum = row.level === 'PG' ? 800 : Number(row.level) || 100;
+      const status = (row.status as UserStatus) || UserStatus.invited;
+
+      validRows.push({
+        rowNumber,
+        matricNo: normalizedMatric,
+        fullName: row.fullName.trim(),
+        deptId: dept.id,
+        level: levelNum,
+        email: row.email?.trim().toLowerCase(),
+        status,
+      });
+    }
+
+    const validMatrics = validRows.map((r) => r.matricNo);
+    const existingUsers = await this.prisma.user.findMany({
+      where: { matricNo: { in: validMatrics } },
+      include: { department: true },
+    });
+    const existingMap = new Map(existingUsers.map((u) => [u.matricNo!, u]));
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const row of validRows) {
+        const existing = existingMap.get(row.matricNo);
+
+        if (existing) {
+          if (
+            actor.role === Role.hod &&
+            actor.departmentId &&
+            existing.departmentId &&
+            existing.departmentId !== actor.departmentId
+          ) {
+            rejected.push({
+              matricNo: row.matricNo,
+              row: row.rowNumber,
+              reason: 'Existing student belongs to another department; HOD cannot modify them',
+            });
+            continue;
+          }
+
+          if (dto.skipDuplicates && existing.status === UserStatus.active) {
+            skipped++;
+            continue;
+          }
+
+          const updatedUser = await tx.user.update({
+            where: { id: existing.id },
+            data: {
+              fullName: row.fullName,
+              departmentId: row.deptId,
+              level: row.level,
+              email: row.email || existing.email,
+              status: row.status || existing.status,
+            },
+            include: { department: true },
+          });
+
+          updated.push(toSafeUser(updatedUser));
+        } else {
+          const defaultEmail = `${row.matricNo.replaceAll('/', '').toLowerCase()}@student.foc.edu.ng`;
+          const createdUser = await tx.user.create({
+            data: {
+              fullName: row.fullName,
+              matricNo: row.matricNo,
+              email: row.email || defaultEmail,
+              passwordHash: await hash(randomUUID(), 10),
+              role: Role.student,
+              departmentId: row.deptId,
+              level: row.level,
+              status: row.status,
+            },
+            include: { department: true },
+          });
+
+          created.push(toSafeUser(createdUser));
+        }
+      }
+
+      await this.audit.log(
+        actor,
+        'BULK_IMPORT_STUDENTS',
+        'User',
+        'bulk',
+        `Bulk import: ${created.length} created, ${updated.length} updated, ${skipped} skipped, ${rejected.length} rejected`,
+        undefined,
+        {
+          total: dto.students.length,
+          created: created.length,
+          updated: updated.length,
+          skipped,
+          rejectedCount: rejected.length,
+        },
+        tx,
+      );
+    });
+
+    return {
+      success: true,
+      total: dto.students.length,
+      created: created.length,
+      updated: updated.length,
+      skipped,
+      rejected,
+      items: [...created, ...updated],
+    };
   }
 
   async status(
@@ -296,8 +496,17 @@ export class AdminService {
     if (dto.role === 'admin' && actor.role !== Role.admin) {
       throw new ForbiddenException('Only admins can grant the admin role');
     }
-    if (actor.role === Role.hod && dto.scopeId !== target.department?.name && dto.scopeId !== target.department?.code) {
-      throw new ForbiddenException('HOD scope is limited to their department');
+    if (actor.role === Role.hod) {
+      if (dto.role === 'admin' || dto.role === 'hod') {
+        throw new ForbiddenException('HOD cannot grant administrative or HOD roles');
+      }
+      if (actor.departmentId && target.departmentId && target.departmentId !== actor.departmentId) {
+        throw new ForbiddenException('HOD can only manage their department');
+      }
+      const dept = target.department;
+      if (dto.scopeId !== dept?.name && dto.scopeId !== dept?.code && dto.scopeId !== actor.departmentId) {
+        throw new ForbiddenException('HOD scope is limited to their department');
+      }
     }
 
     const validFrom = new Date(dto.validFrom);
@@ -355,7 +564,7 @@ export class AdminService {
   }
 
   async endRole(
-    actor: { id: string; fullName: string; role: Role },
+    actor: { id: string; fullName: string; role: Role; departmentId?: string | null },
     id: string,
   ) {
     const role = await this.prisma.roleAssignment.findUnique({
@@ -364,6 +573,15 @@ export class AdminService {
     });
 
     if (!role) throw new NotFoundException('Role assignment not found');
+
+    if (actor.role === Role.hod) {
+      if (role.role === Role.admin || role.role === Role.hod) {
+        throw new ForbiddenException('HOD cannot end administrative or HOD roles');
+      }
+      if (actor.departmentId && role.user?.departmentId && role.user.departmentId !== actor.departmentId) {
+        throw new ForbiddenException('HOD can only manage roles within their department');
+      }
+    }
 
     if (role.role === Role.admin) {
       const activeAdminCount = await this.prisma.roleAssignment.count({
@@ -455,7 +673,26 @@ export class AdminService {
     };
   }
 
-  async offeringEnrollments(offeringId: string) {
+  async offeringEnrollments(
+    actor: { id: string; role: Role; departmentId?: string | null },
+    offeringId: string,
+  ) {
+    const offering = await this.prisma.offering.findUnique({
+      where: { id: offeringId },
+      include: { course: true },
+    });
+    if (!offering) throw new NotFoundException('Course offering not found');
+
+    if (
+      actor.role === Role.hod &&
+      actor.departmentId &&
+      offering.course.departmentId !== actor.departmentId
+    ) {
+      throw new ForbiddenException(
+        'HOD can only view enrollments for courses in their department',
+      );
+    }
+
     const enrollments = await this.prisma.enrollment.findMany({
       where: { offeringId },
       include: {
@@ -473,7 +710,7 @@ export class AdminService {
   }
 
   async enroll(
-    actor: { id: string; fullName: string; role: Role },
+    actor: { id: string; fullName: string; role: Role; departmentId?: string | null },
     offeringId: string,
     dto: EnrollmentDto,
   ) {
@@ -487,6 +724,16 @@ export class AdminService {
 
     if (!offering || !user) {
       throw new NotFoundException('Offering or student not found');
+    }
+
+    if (
+      actor.role === Role.hod &&
+      actor.departmentId &&
+      offering.course.departmentId !== actor.departmentId
+    ) {
+      throw new ForbiddenException(
+        'HOD can only manage enrollments for courses in their department',
+      );
     }
 
     const existing = await this.prisma.enrollment.findUnique({

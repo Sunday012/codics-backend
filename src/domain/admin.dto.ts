@@ -1,4 +1,15 @@
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsOptional,
+  IsString,
+  Matches,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class StudentDto {
   @Matches(/^[A-Z]{2,4}\/\d{4}\/\d{3,4}$/i) matricNo!: string;
@@ -8,6 +19,18 @@ export class StudentDto {
   @IsOptional() @IsEmail() email?: string;
   @IsOptional() @IsIn(['invited', 'active', 'suspended']) status?: 'invited' | 'active' | 'suspended';
 }
+
+export class BulkStudentImportDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => StudentDto)
+  students!: StudentDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  skipDuplicates?: boolean;
+}
+
 export class StatusDto { @IsIn(['invited', 'active', 'suspended']) status!: 'invited' | 'active' | 'suspended'; @IsOptional() @IsString() reason?: string; }
 export class RoleAssignmentDto {
   @IsString() userId!: string; @IsIn(['course_rep', 'hod', 'admin']) role!: 'course_rep' | 'hod' | 'admin';
@@ -17,3 +40,4 @@ export class RoleAssignmentDto {
 export class EnrollmentDto { @IsString() userId!: string; @IsIn(['regular', 'carryover', 'elective']) type!: 'regular' | 'carryover' | 'elective'; }
 export class SettingsDto { @IsString() session!: string; @IsIn(['First Semester', 'Second Semester']) semester!: string; }
 export class DepartmentDto { @IsOptional() @IsString() id?: string; @IsString() name!: string; @IsString() code!: string; @IsOptional() @IsBoolean() isActive?: boolean; }
+

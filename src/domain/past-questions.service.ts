@@ -435,6 +435,9 @@ export class PastQuestionsService {
   async remove(id: string, user: SafeUser) {
     const paper = await this.prisma.pastQuestion.findUnique({
       where: { id },
+      include: {
+        uploader: { include: { department: true } },
+      },
     });
 
     if (!paper || paper.deletedAt) {
@@ -442,7 +445,18 @@ export class PastQuestionsService {
     }
 
     const role = this.auth.effectiveRole(user);
-    if (paper.uploaderId !== user.id && role !== Role.admin && role !== Role.hod) {
+    if (role === Role.hod) {
+      const course = await this.prisma.course.findUnique({
+        where: { code: paper.courseCode },
+        include: { department: true },
+      });
+      const paperDept = course?.department?.name || paper.uploader?.department?.name;
+      if (paperDept !== user.department) {
+        throw new ForbiddenException(
+          'HOD can only delete past questions in their department',
+        );
+      }
+    } else if (paper.uploaderId !== user.id && role !== Role.admin) {
       throw new ForbiddenException('You cannot delete this paper');
     }
 

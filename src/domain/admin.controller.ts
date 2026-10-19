@@ -4,6 +4,7 @@ import { CurrentUser, Roles } from '../auth/auth.decorators';
 import { User, UserStatus } from '@prisma/client';
 import { AdminService } from './admin.service';
 import {
+  BulkStudentImportDto,
   DepartmentDto,
   EnrollmentDto,
   RoleAssignmentDto,
@@ -32,6 +33,14 @@ export class AdminController {
   @Post('students')
   student(@CurrentUser() user: User, @Body() dto: StudentDto) {
     return this.admin.upsertStudent(user, dto);
+  }
+
+  @Post('students/bulk')
+  bulkStudents(
+    @CurrentUser() user: User,
+    @Body() dto: BulkStudentImportDto,
+  ) {
+    return this.admin.bulkUpsertStudents(user, dto);
   }
 
   @Patch('students/:id/status')
@@ -64,8 +73,8 @@ export class AdminController {
   }
 
   @Get('offerings/:id/enrollments')
-  enrollments(@Param('id') id: string) {
-    return this.admin.offeringEnrollments(id);
+  enrollments(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.admin.offeringEnrollments(user, id);
   }
 
   @Post('offerings/:id/enrollments')

@@ -367,8 +367,19 @@ export class CoursesService {
     return { success: true };
   }
 
-  private async canManageOffering(user: { id: string; role: Role }, offeringId: string) {
-    if (['admin', 'hod'].includes(user.role)) return true;
+  private async canManageOffering(
+    user: { id: string; role: Role; departmentId?: string | null },
+    offeringId: string,
+  ) {
+    if (user.role === Role.admin) return true;
+    if (user.role === Role.hod) {
+      if (!user.departmentId) return false;
+      const offering = await this.prisma.offering.findUnique({
+        where: { id: offeringId },
+        include: { course: true },
+      });
+      return offering?.course.departmentId === user.departmentId;
+    }
     if (user.role === Role.lecturer) {
       const assigned = await this.prisma.offeringLecturer.findUnique({
         where: {
@@ -380,11 +391,14 @@ export class CoursesService {
     return false;
   }
 
-  private async assertCanManage(user: { id: string; role: Role }, offeringId: string) {
+  private async assertCanManage(
+    user: { id: string; role: Role; departmentId?: string | null },
+    offeringId: string,
+  ) {
     const can = await this.canManageOffering(user, offeringId);
     if (!can) {
       throw new ForbiddenException(
-        'You are not assigned to manage this course offering',
+        'You are not authorized to manage this course offering',
       );
     }
   }

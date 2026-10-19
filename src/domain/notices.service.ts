@@ -268,13 +268,17 @@ export class NoticesService {
   async update(id: string, user: SafeUser, dto: NoticeDto) {
     const existing = await this.prisma.notice.findUnique({
       where: { id },
-      include: { author: true },
+      include: { author: { include: { department: true } } },
     });
     if (!existing) throw new NotFoundException('Notice not found');
 
     const role = this.auth.effectiveRole(user);
-    if (existing.authorId !== user.id && role !== Role.admin && role !== Role.hod) {
-      throw new ForbiddenException('Only the author or an administrator can update this notice');
+    if (existing.authorId !== user.id) {
+      if (role === Role.hod) {
+        await this.assertHodOwnDepartment(user, existing);
+      } else if (role !== Role.admin) {
+        throw new ForbiddenException('Only the author or an administrator can update this notice');
+      }
     }
 
     this.assertCanPublish(user, dto);
@@ -303,13 +307,17 @@ export class NoticesService {
   async remove(id: string, user: SafeUser) {
     const existing = await this.prisma.notice.findUnique({
       where: { id },
-      include: { author: true },
+      include: { author: { include: { department: true } } },
     });
     if (!existing) throw new NotFoundException('Notice not found');
 
     const role = this.auth.effectiveRole(user);
-    if (existing.authorId !== user.id && role !== Role.admin && role !== Role.hod) {
-      throw new ForbiddenException('Only the author or an administrator can delete this notice');
+    if (existing.authorId !== user.id) {
+      if (role === Role.hod) {
+        await this.assertHodOwnDepartment(user, existing);
+      } else if (role !== Role.admin) {
+        throw new ForbiddenException('Only the author or an administrator can delete this notice');
+      }
     }
 
     await this.prisma.notice.delete({ where: { id } });

@@ -188,7 +188,7 @@ export class AssignmentsService {
   async create(user: SafeUser, dto: AssignmentDto) {
     const offering = await this.prisma.offering.findUnique({
       where: { id: dto.offeringId },
-      include: { lecturers: true },
+      include: { course: true, lecturers: true },
     });
 
     if (!offering) throw new BadRequestException('Course offering not found');
@@ -199,6 +199,13 @@ export class AssignmentsService {
       !offering.lecturers.some((l) => l.userId === user.id)
     ) {
       throw new ForbiddenException('You are not assigned to this course offering');
+    }
+    if (
+      role === Role.hod &&
+      user.departmentId &&
+      offering.course.departmentId !== user.departmentId
+    ) {
+      throw new ForbiddenException('HOD can only create assignments in their department');
     }
 
     const assignment = await this.prisma.assignment.create({
@@ -526,12 +533,14 @@ export class AssignmentsService {
     return this.mapAssignment(updatedAssignment);
   }
 
-  async headcount(id: string, _user: SafeUser) {
+  async headcount(id: string, user: SafeUser) {
     const assignment = await this.prisma.assignment.findUnique({
       where: { id },
       include: {
         offering: {
           include: {
+            course: { include: { department: true } },
+            lecturers: true,
             enrollments: {
               include: { user: true },
             },
@@ -547,6 +556,23 @@ export class AssignmentsService {
     });
 
     if (!assignment) throw new NotFoundException('Assignment not found');
+
+    const role = this.auth.effectiveRole(user);
+    if (role === Role.student) {
+      throw new ForbiddenException('Students cannot view headcount details');
+    }
+    if (role === Role.course_rep) {
+      const isEnrolled = assignment.offering.enrollments.some((e) => e.userId === user.id);
+      if (!isEnrolled) {
+        throw new ForbiddenException(
+          'Course representatives can only view headcount for enrolled courses',
+        );
+      }
+    } else if (!this.canManage(user, assignment)) {
+      throw new ForbiddenException(
+        'You are not authorized to view headcount for this assignment',
+      );
+    }
 
     const students = assignment.offering.enrollments.map((e) => e.user);
     const submissions = assignment.submissions;
@@ -646,7 +672,7 @@ export class AssignmentsService {
     if (role === Role.admin) return true;
     if (role === Role.hod) {
       const deptId = assignment.offering?.course?.departmentId;
-      return !user.departmentId || !deptId || deptId === user.departmentId;
+      return Boolean(user.departmentId && deptId && deptId === user.departmentId);
     }
     if (role === Role.lecturer) {
       const lecturerIds = assignment.offering?.lecturers?.map((l: any) => l.userId) || [];
