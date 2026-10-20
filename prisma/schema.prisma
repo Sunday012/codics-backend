@@ -102,6 +102,12 @@ enum AttendanceRecordSource {
   manual
 }
 
+enum FileCategory {
+  course_material
+  assignment_submission
+  past_question
+}
+
 model Department {
   id        String   @id @default(uuid())
   code      String   @unique
@@ -138,26 +144,28 @@ model User {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  department          Department?          @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  enrollments         Enrollment[]
-  lecturerOfferings   OfferingLecturer[]
-  authoredNotices     Notice[]             @relation("AuthoredNotices")
-  noticeReads         NoticeRead[]
-  submissions         Submission[]
-  uploadedPQs         PastQuestion[]       @relation("UploadedPQs")
-  approvedPQs         PastQuestion[]       @relation("ApprovedPQs")
-  pqReports           PastQuestionReport[]
-  roleAssignments     RoleAssignment[]     @relation("UserRoleAssignments")
-  createdAssignments RoleAssignment[]     @relation("CreatedRoleAssignments")
-  refreshTokens       RefreshToken[]
-  activationCodes     ActivationCode[]
-  passwordResets      PasswordReset[]
-  auditLogs           AuditLog[]
-  createdAttendanceSessions AttendanceSession[]    @relation("CreatedAttendanceSessions")
-  attendanceRecords         AttendanceRecord[]      @relation("StudentAttendanceRecords")
-  adjustedAttendance        AttendanceAdjustment[]  @relation("AdjustedAttendanceRecords")
-  createdCalendarEvents     CalendarEvent[]         @relation("CreatedCalendarEvents")
+  department                 Department?            @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  enrollments                Enrollment[]
+  lecturerOfferings          OfferingLecturer[]
+  authoredNotices            Notice[]               @relation("AuthoredNotices")
+  noticeReads                NoticeRead[]
+  submissions                Submission[]
+  uploadedPQs                PastQuestion[]         @relation("UploadedPQs")
+  approvedPQs                PastQuestion[]         @relation("ApprovedPQs")
+  pqReports                  PastQuestionReport[]
+  roleAssignments            RoleAssignment[]       @relation("UserRoleAssignments")
+  createdAssignments         RoleAssignment[]       @relation("CreatedRoleAssignments")
+  refreshTokens              RefreshToken[]
+  activationCodes            ActivationCode[]
+  passwordResets             PasswordReset[]
+  auditLogs                  AuditLog[]
+  createdAttendanceSessions  AttendanceSession[]    @relation("CreatedAttendanceSessions")
+  attendanceRecords          AttendanceRecord[]     @relation("StudentAttendanceRecords")
+  adjustedAttendance         AttendanceAdjustment[] @relation("AdjustedAttendanceRecords")
+  createdCalendarEvents      CalendarEvent[]        @relation("CreatedCalendarEvents")
   createdTimetableExceptions TimetableException[]   @relation("CreatedTimetableExceptions")
+  uploadedFiles              StoredFile[]           @relation("UploadedFiles")
+  materialProgress           UserMaterialProgress[]
 
   @@index([departmentId])
   @@index([role])
@@ -190,14 +198,15 @@ model Offering {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  course      Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  lecturers   OfferingLecturer[]
-  enrollments Enrollment[]
-  modules     Module[]
-  materials   Material[]
-  assignments Assignment[]
+  course             Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lecturers          OfferingLecturer[]
+  enrollments        Enrollment[]
+  modules            Module[]
+  materials          Material[]
+  assignments        Assignment[]
   attendanceSessions AttendanceSession[]
   timetableSlots     TimetableSlot[]
+  materialProgress   UserMaterialProgress[]
 
   @@unique([courseId, session, semester])
   @@index([courseId])
@@ -262,14 +271,18 @@ model Material {
   fileKey    String?
   fileName   String?
   sizeBytes  Int?
+  mimeType   String?
+  sha256     String?
+  uploaderId String?
   url        String?
   body       String?
   deletedAt  DateTime?
   createdAt  DateTime       @default(now())
   updatedAt  DateTime       @updatedAt
 
-  module   Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  module   Module                 @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  offering Offering               @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  progress UserMaterialProgress[]
 
   @@index([moduleId])
   @@index([offeringId])
@@ -307,10 +320,10 @@ model Notice {
 }
 
 model NoticeRead {
-  id        String   @id @default(uuid())
-  noticeId  String
-  userId    String
-  readAt    DateTime @default(now())
+  id       String   @id @default(uuid())
+  noticeId String
+  userId   String
+  readAt   DateTime @default(now())
 
   notice Notice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -321,18 +334,18 @@ model NoticeRead {
 }
 
 model Assignment {
-  id                 String           @id @default(uuid())
-  offeringId         String
-  title              String
-  instructions       String
-  deadline           DateTime
-  allowLate          Boolean          @default(false)
-  allowedTypes       String[]
-  maxSizeBytes       Int              @default(10485760)
-  status             AssignmentStatus @default(draft)
-  studentExtensions  Json?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  id                String           @id @default(uuid())
+  offeringId        String
+  title             String
+  instructions      String
+  deadline          DateTime
+  allowLate         Boolean          @default(false)
+  allowedTypes      String[]
+  maxSizeBytes      Int              @default(10485760)
+  status            AssignmentStatus @default(draft)
+  studentExtensions Json?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
 
   offering    Offering     @relation(fields: [offeringId], references: [id], onDelete: Cascade)
   submissions Submission[]
@@ -397,17 +410,15 @@ model PastQuestion {
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 
-  uploader   User                 @relation("UploadedPQs", fields: [uploaderId], references: [id], onDelete: Cascade)
-  approver   User?                @relation("ApprovedPQs", fields: [approvedBy], references: [id], onDelete: SetNull)
-  reports    PastQuestionReport[]
+  uploader User                 @relation("UploadedPQs", fields: [uploaderId], references: [id], onDelete: Cascade)
+  approver User?                @relation("ApprovedPQs", fields: [approvedBy], references: [id], onDelete: SetNull)
+  reports  PastQuestionReport[]
 
   @@index([uploaderId])
   @@index([courseCode])
   @@index([session, semester])
   @@index([status])
   @@index([deletedAt])
-  // Note: Partial unique index (courseCode, session, semester, examType) WHERE deletedAt IS NULL
-  // is added via migration SQL step.
 }
 
 model PastQuestionReport {
@@ -429,17 +440,17 @@ model PastQuestionReport {
 }
 
 model RoleAssignment {
-  id          String        @id @default(uuid())
-  userId      String
-  role        Role
-  scopeType   RoleScopeType
-  scopeId     String
-  validFrom   DateTime
-  validTo     DateTime
-  createdBy   String
-  isActive    Boolean       @default(true)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id        String        @id @default(uuid())
+  userId    String
+  role      Role
+  scopeType RoleScopeType
+  scopeId   String
+  validFrom DateTime
+  validTo   DateTime
+  createdBy String
+  isActive  Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
   user    User @relation("UserRoleAssignments", fields: [userId], references: [id], onDelete: Cascade)
   creator User @relation("CreatedRoleAssignments", fields: [createdBy], references: [id], onDelete: Cascade)
@@ -582,11 +593,11 @@ model AttendanceAdjustment {
 
 model AcademicPeriod {
   id        String   @id @default(uuid())
-  sessionId String   // e.g. '2025/2026'
+  sessionId String
   title     String
-  type      String   // orientation, registration, lectures, exams, break, holiday, other
-  start     String   // YYYY-MM-DD
-  end       String   // YYYY-MM-DD
+  type      String
+  start     String
+  end       String
   notes     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -599,11 +610,11 @@ model AcademicPeriod {
 model TimetableSlot {
   id         String   @id @default(uuid())
   offeringId String
-  weekday    Int      // 1 = Monday ... 7 = Sunday
-  startTime  String   // HH:mm
-  endTime    String   // HH:mm
+  weekday    Int
+  startTime  String
+  endTime    String
   venue      String
-  kind       String   @default("lecture") // lecture, practical, tutorial
+  kind       String   @default("lecture")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -617,8 +628,8 @@ model TimetableSlot {
 model TimetableException {
   id        String   @id @default(uuid())
   slotId    String
-  date      String   // YYYY-MM-DD
-  kind      String   // cancelled, moved
+  date      String
+  kind      String
   newVenue  String?
   newTime   String?
   note      String?
@@ -637,7 +648,7 @@ model TimetableException {
 model CalendarEvent {
   id               String        @id @default(uuid())
   title            String
-  type             String        // exam, event, meeting, other
+  type             String
   start            DateTime
   end              DateTime
   allDay           Boolean       @default(false)
@@ -662,4 +673,44 @@ model CalendarEvent {
   @@index([createdBy])
 }
 
+model StoredFile {
+  id             String       @id @default(uuid())
+  fileKey        String       @unique
+  fileName       String
+  mimeType       String
+  sizeBytes      Int
+  sha256         String
+  category       FileCategory
+  uploaderId     String
+  linkedRecordId String?
+  storageDriver  String       @default("disk")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
+  uploader User @relation("UploadedFiles", fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  @@index([category])
+  @@index([uploaderId])
+  @@index([linkedRecordId])
+}
+
+model UserMaterialProgress {
+  id             String    @id @default(uuid())
+  userId         String
+  materialId     String
+  offeringId     String
+  completed      Boolean   @default(false)
+  completedAt    DateTime?
+  lastAccessedAt DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, materialId])
+  @@index([userId, lastAccessedAt])
+  @@index([userId, offeringId])
+  @@index([materialId])
+}

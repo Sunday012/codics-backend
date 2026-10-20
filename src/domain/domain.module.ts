@@ -13,6 +13,10 @@ import { NoticesController } from './notices.controller';
 import { NoticesService } from './notices.service';
 import { PastQuestionsController } from './past-questions.controller';
 import { PastQuestionsService } from './past-questions.service';
+import { ProgressController } from './progress.controller';
+import { ProgressService } from './progress.service';
+import { SearchController } from './search.controller';
+import { SearchService } from './search.service';
 
 @Module({
   controllers: [
@@ -23,6 +27,8 @@ import { PastQuestionsService } from './past-questions.service';
     AdminController,
     AttendanceController,
     CalendarController,
+    ProgressController,
+    SearchController,
   ],
   providers: [
     NoticesService,
@@ -32,6 +38,8 @@ import { PastQuestionsService } from './past-questions.service';
     AdminService,
     AttendanceService,
     CalendarService,
+    ProgressService,
+    SearchService,
   ],
 })
 export class DomainModule {}

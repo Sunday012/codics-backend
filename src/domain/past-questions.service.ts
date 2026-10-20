@@ -4,9 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   ExamType,
+  FileCategory,
   PastQuestionStatus,
   Role,
   Semester,
@@ -14,6 +15,11 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../common/audit.service';
 import { StorageService } from '../common/storage.service';
+import {
+  assertValidUploadFile,
+  generateObjectKey,
+  sanitizeFileName,
+} from '../common/file-validator.util';
 import { AuthService } from '../auth/auth.service';
 import { SafeUser } from '../common/user.util';
 import {
@@ -22,6 +28,8 @@ import {
   parsePaginationParams,
 } from '../common/pagination.util';
 import { ReportPaperDto, UploadPaperDto } from './past-questions.dto';
+
+const MAX_PAST_QUESTION_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
 function toSemesterEnum(sem: string): Semester {
   const s = sem.toLowerCase();
@@ -37,7 +45,9 @@ function toExamTypeEnum(type: string, sem?: Semester): ExamType {
   const t = type.toLowerCase();
   if (t === 'test') return ExamType.test;
   if (t === 'quiz' || t.includes('mid')) return ExamType.mid_semester;
-  return sem === Semester.second ? ExamType.second_semester : ExamType.first_semester;
+  return sem === Semester.second
+    ? ExamType.second_semester
+    : ExamType.first_semester;
 }
 
 function fromExamTypeEnum(type: ExamType): string {
@@ -61,7 +71,8 @@ export class PastQuestionsService {
       courseId: p.course?.id || '',
       courseCode: p.courseCode,
       courseTitle: p.course?.title || `${p.courseCode} Course`,
-      department: p.course?.department?.name || p.uploader?.department?.name || '',
+      department:
+        p.course?.department?.name || p.uploader?.department?.name || '',
       level: p.course ? String(p.course.level) : '100',
       session: p.session,
       semester: fromSemesterEnum(p.semester),
@@ -193,7 +204,11 @@ export class PastQuestionsService {
       },
     });
 
-    if (!paper || paper.deletedAt || paper.status !== PastQuestionStatus.approved) {
+    if (
+      !paper ||
+      paper.deletedAt ||
+      paper.status !== PastQuestionStatus.approved
+    ) {
       throw new NotFoundException('Past question not found');
     }
 
@@ -227,7 +242,9 @@ export class PastQuestionsService {
         semester: semesterEnum,
         examType: examTypeEnum,
         deletedAt: null,
-        status: { in: [PastQuestionStatus.approved, PastQuestionStatus.pending] },
+        status: {
+          in: [PastQuestionStatus.approved, PastQuestionStatus.pending],
+        },
       },
     });
 
@@ -245,54 +262,95 @@ export class PastQuestionsService {
       : PastQuestionStatus.pending;
     const approvedBy = isImmediate ? user.id : null;
 
-    // File handling
-    const safeName = (file?.originalname || dto.fileName || `${dto.courseCode}_${dto.session}.pdf`).replace(
-      /[^a-zA-Z0-9._-]/g,
-      '_',
+    // File handling & magic-byte validation
+    const rawFileName =
+      file?.originalname ||
+      dto.fileName ||
+      `${dto.courseCode}_${dto.session}.pdf`;
+    const safeName = sanitizeFileName(rawFileName);
+    const fileBuffer =
+      file?.buffer || Buffer.from('%PDF-1.4 Mock Past Question Content');
+    const claimedMime = file?.mimetype || 'application/pdf';
+
+    const sig = assertValidUploadFile({
+      buffer: fileBuffer,
+      fileName: safeName,
+      mimeType: claimedMime,
+      maxSizeBytes: MAX_PAST_QUESTION_SIZE_BYTES,
+      allowedExtensions: ['.pdf', '.png', '.jpg', '.jpeg'],
+    });
+
+    const fileKey = generateObjectKey(
+      'past-questions',
+      safeName,
+      dto.courseCode,
     );
-    const fileKey = `past-questions/${dto.courseCode}/${randomUUID()}-${safeName}`;
-    const fileBuffer = file?.buffer || Buffer.from('%PDF-1.4 Mock Past Question Content');
-    const mimeType = file?.mimetype || 'application/pdf';
     const checksum = createHash('sha256').update(fileBuffer).digest('hex');
 
-    await this.storage.putObject(fileKey, fileBuffer, mimeType);
+    await this.storage.putObject(fileKey, fileBuffer, sig.detectedMimeType);
 
-    const paper = await this.prisma.pastQuestion.create({
-      data: {
-        uploaderId: user.id,
-        courseCode: dto.courseCode,
-        session: dto.session,
-        semester: semesterEnum,
-        examType: examTypeEnum,
-        fileKey,
-        fileName: safeName,
-        sizeBytes: fileBuffer.length,
-        mimeType,
-        sha256: checksum,
-        status,
-        approvedBy,
-      },
-      include: {
-        uploader: { include: { department: true } },
-        reports: true,
-      },
-    });
+    try {
+      const paper = await this.prisma.pastQuestion.create({
+        data: {
+          uploaderId: user.id,
+          courseCode: dto.courseCode,
+          session: dto.session,
+          semester: semesterEnum,
+          examType: examTypeEnum,
+          fileKey,
+          fileName: safeName,
+          sizeBytes: fileBuffer.length,
+          mimeType: sig.detectedMimeType,
+          sha256: checksum,
+          status,
+          approvedBy,
+        },
+        include: {
+          uploader: { include: { department: true } },
+          reports: true,
+        },
+      });
 
-    await this.audit.log(
-      user,
-      'UPLOAD_PAST_QUESTION',
-      'PastQuestion',
-      paper.id,
-      `${paper.courseCode} ${paper.session}`,
-    );
+      if ((this.prisma as any).storedFile) {
+        await (this.prisma as any).storedFile.create({
+          data: {
+            fileKey,
+            fileName: safeName,
+            mimeType: sig.detectedMimeType,
+            sizeBytes: fileBuffer.length,
+            sha256: checksum,
+            category: FileCategory.past_question,
+            uploaderId: user.id,
+            linkedRecordId: paper.id,
+            storageDriver:
+              typeof (this.storage as any).getDriverName === 'function'
+                ? (this.storage as any).getDriverName()
+                : 'disk',
+          },
+        });
+      }
 
-    const course = await this.prisma.course.findUnique({
-      where: { code: paper.courseCode },
-      include: { department: true },
-    });
-    (paper as any).course = course;
+      await this.audit.log(
+        user,
+        'UPLOAD_PAST_QUESTION',
+        'PastQuestion',
+        paper.id,
+        `${paper.courseCode} ${paper.session}`,
+      );
 
-    return this.mapPaper(paper);
+      const course = await this.prisma.course.findUnique({
+        where: { code: paper.courseCode },
+        include: { department: true },
+      });
+      (paper as any).course = course;
+
+      return this.mapPaper(paper);
+    } catch (err) {
+      if (typeof this.storage.deleteObject === 'function') {
+        await this.storage.deleteObject(fileKey);
+      }
+      throw err;
+    }
   }
 
   async pending(user: SafeUser) {
@@ -356,7 +414,12 @@ export class PastQuestionsService {
     });
   }
 
-  async review(id: string, user: SafeUser, approved: boolean, reason?: string) {
+  async review(
+    id: string,
+    user: SafeUser,
+    approved: boolean,
+    reason?: string,
+  ) {
     const paper = await this.prisma.pastQuestion.findUnique({
       where: { id },
       include: {
@@ -372,17 +435,22 @@ export class PastQuestionsService {
       where: { code: paper.courseCode },
       include: { department: true },
     });
-    const paperDeptName = course?.department?.name || paper.uploader?.department?.name;
+    const paperDeptName =
+      course?.department?.name || paper.uploader?.department?.name;
 
     const role = this.auth.effectiveRole(user);
     if (role === Role.hod && paperDeptName !== user.department) {
-      throw new ForbiddenException('HOD review is limited to their department');
+      throw new ForbiddenException(
+        'HOD review is limited to their department',
+      );
     }
 
     const updated = await this.prisma.pastQuestion.update({
       where: { id },
       data: {
-        status: approved ? PastQuestionStatus.approved : PastQuestionStatus.rejected,
+        status: approved
+          ? PastQuestionStatus.approved
+          : PastQuestionStatus.rejected,
         approvedBy: approved ? user.id : null,
         rejectionReason: approved ? null : reason || null,
       },
@@ -412,7 +480,11 @@ export class PastQuestionsService {
       include: { reports: true },
     });
 
-    if (!paper || paper.deletedAt || paper.status !== PastQuestionStatus.approved) {
+    if (
+      !paper ||
+      paper.deletedAt ||
+      paper.status !== PastQuestionStatus.approved
+    ) {
       throw new NotFoundException('Past question not found');
     }
 
@@ -450,7 +522,8 @@ export class PastQuestionsService {
         where: { code: paper.courseCode },
         include: { department: true },
       });
-      const paperDept = course?.department?.name || paper.uploader?.department?.name;
+      const paperDept =
+        course?.department?.name || paper.uploader?.department?.name;
       if (paperDept !== user.department) {
         throw new ForbiddenException(
           'HOD can only delete past questions in their department',
@@ -460,11 +533,21 @@ export class PastQuestionsService {
       throw new ForbiddenException('You cannot delete this paper');
     }
 
-    // Soft delete
+    // Soft delete and clean up underlying storage object
     await this.prisma.pastQuestion.update({
       where: { id },
       data: { deletedAt: new Date() },
     });
+
+    if (paper.fileKey) {
+      if (
+        typeof (this.storage as any).deleteCategorizedObject === 'function'
+      ) {
+        await (this.storage as any).deleteCategorizedObject(paper.fileKey);
+      } else if (typeof this.storage.deleteObject === 'function') {
+        await this.storage.deleteObject(paper.fileKey);
+      }
+    }
 
     await this.audit.log(
       user,
@@ -495,7 +578,8 @@ export class PastQuestionsService {
         where: { code: paper.courseCode },
         include: { department: true },
       });
-      const paperDept = course?.department?.name || paper.uploader?.department?.name;
+      const paperDept =
+        course?.department?.name || paper.uploader?.department?.name;
 
       const canViewPending =
         role === Role.admin ||
@@ -503,7 +587,9 @@ export class PastQuestionsService {
         (role === Role.hod && paperDept === user.department);
 
       if (!canViewPending) {
-        throw new ForbiddenException('You do not have permission to download this paper');
+        throw new ForbiddenException(
+          'You do not have permission to download this paper',
+        );
       }
     }
 
