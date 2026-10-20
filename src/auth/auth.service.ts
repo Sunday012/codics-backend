@@ -297,6 +297,19 @@ export class AuthService {
       });
     });
 
+    if (
+      updatedUser.email &&
+      typeof this.mail.sendAccountApprovedNotification === 'function'
+    ) {
+      await this.mail
+        .sendAccountApprovedNotification(updatedUser.email, {
+          fullName: updatedUser.fullName,
+          role: updatedUser.role,
+          department: updatedUser.department?.name,
+        })
+        .catch(() => {});
+    }
+
     return this.issueTokens(updatedUser, undefined, req, res);
   }
 

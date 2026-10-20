@@ -166,6 +166,7 @@ model User {
   createdTimetableExceptions TimetableException[]   @relation("CreatedTimetableExceptions")
   uploadedFiles              StoredFile[]           @relation("UploadedFiles")
   materialProgress           UserMaterialProgress[]
+  pushSubscriptions          PushSubscription[]
 
   @@index([departmentId])
   @@index([role])
@@ -713,4 +714,28 @@ model UserMaterialProgress {
   @@index([userId, lastAccessedAt])
   @@index([userId, offeringId])
   @@index([materialId])
+}
+
+model PushSubscription {
+  id                  String    @id @default(uuid())
+  userId              String
+  endpoint            String    @unique
+  p256dh              String
+  auth                String
+  userAgent           String?
+  urgentNotices       Boolean   @default(true)
+  courseUpdates       Boolean   @default(true)
+  assignmentReminders Boolean   @default(true)
+  isActive            Boolean   @default(true)
+  failureCount        Int       @default(0)
+  lastSuccessAt       DateTime?
+  lastFailureAt       DateTime?
+  lastError           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([isActive, urgentNotices])
 }

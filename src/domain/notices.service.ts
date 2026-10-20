@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { AudienceScope, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +15,7 @@ import {
   parsePaginationParams,
 } from '../common/pagination.util';
 import { NoticeDto } from './notices.dto';
+import { PushService } from './push.service';
 
 @Injectable()
 export class NoticesService {
@@ -21,12 +23,10 @@ export class NoticesService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly auth: AuthService,
+    @Optional() private readonly push?: PushService,
   ) {}
 
-  private mapNotice(
-    n: any,
-    _userDeptName?: string | null,
-  ) {
+  private mapNotice(n: any, _userDeptName?: string | null) {
     return {
       id: n.id,
       title: n.title,
@@ -96,21 +96,14 @@ export class NoticesService {
         ...(userDeptName ? [{ targetDepartmentCode: userDeptName }] : []),
       ];
 
-      const audienceConditions: any[] = [
-        { scope: AudienceScope.faculty },
-      ];
+      const audienceConditions: any[] = [{ scope: AudienceScope.faculty }];
 
       if (deptMatches.length > 0) {
         audienceConditions.push({
-          AND: [
-            { scope: AudienceScope.department },
-            { OR: deptMatches },
-          ],
+          AND: [{ scope: AudienceScope.department }, { OR: deptMatches }],
         });
 
-        const levelConditions: any[] = [
-          { targetLevel: null },
-        ];
+        const levelConditions: any[] = [{ targetLevel: null }];
         if (user.level) {
           levelConditions.push({ targetLevel: Number(user.level) });
         }
@@ -140,10 +133,7 @@ export class NoticesService {
     let visibilityWhere: any = {};
     if (role !== Role.admin) {
       visibilityWhere = {
-        OR: [
-          { isHidden: false },
-          { authorId: user.id },
-        ],
+        OR: [{ isHidden: false }, { authorId: user.id }],
       };
     }
 
@@ -158,11 +148,9 @@ export class NoticesService {
     }
 
     const where: any = {
-      AND: [
-        audienceWhere,
-        visibilityWhere,
-        searchWhere,
-      ].filter((clause) => Object.keys(clause).length > 0),
+      AND: [audienceWhere, visibilityWhere, searchWhere].filter(
+        (clause) => Object.keys(clause).length > 0,
+      ),
     };
 
     const total = await this.prisma.notice.count({ where });
@@ -261,7 +249,18 @@ export class NoticesService {
       },
     });
 
-    await this.audit.log(user, 'CREATE_NOTICE', 'Notice', notice.id, notice.title);
+    await this.audit.log(
+      user,
+      'CREATE_NOTICE',
+      'Notice',
+      notice.id,
+      notice.title,
+    );
+
+    if (notice.isUrgent && this.push) {
+      await this.push.dispatchUrgentNotice(notice).catch(() => {});
+    }
+
     return this.mapNotice(notice);
   }
 
@@ -277,7 +276,9 @@ export class NoticesService {
       if (role === Role.hod) {
         await this.assertHodOwnDepartment(user, existing);
       } else if (role !== Role.admin) {
-        throw new ForbiddenException('Only the author or an administrator can update this notice');
+        throw new ForbiddenException(
+          'Only the author or an administrator can update this notice',
+        );
       }
     }
 
@@ -316,7 +317,9 @@ export class NoticesService {
       if (role === Role.hod) {
         await this.assertHodOwnDepartment(user, existing);
       } else if (role !== Role.admin) {
-        throw new ForbiddenException('Only the author or an administrator can delete this notice');
+        throw new ForbiddenException(
+          'Only the author or an administrator can delete this notice',
+        );
       }
     }
 
@@ -354,7 +357,9 @@ export class NoticesService {
     if (role === Role.hod) {
       await this.assertHodOwnDepartment(user, notice);
     } else if (role !== Role.admin) {
-      throw new ForbiddenException('Only administrators and HODs can hide notices');
+      throw new ForbiddenException(
+        'Only administrators and HODs can hide notices',
+      );
     }
 
     const updated = await this.prisma.notice.update({
@@ -368,8 +373,19 @@ export class NoticesService {
       include: { author: true, reads: true },
     });
 
-    await this.audit.log(user, 'HIDE_NOTICE', 'Notice', id, notice.title, reason);
-    return { success: true, message: 'Notice hidden successfully', notice: this.mapNotice(updated) };
+    await this.audit.log(
+      user,
+      'HIDE_NOTICE',
+      'Notice',
+      id,
+      notice.title,
+      reason,
+    );
+    return {
+      success: true,
+      message: 'Notice hidden successfully',
+      notice: this.mapNotice(updated),
+    };
   }
 
   async unhide(id: string, user: SafeUser) {
@@ -383,7 +399,9 @@ export class NoticesService {
     if (role === Role.hod) {
       await this.assertHodOwnDepartment(user, notice);
     } else if (role !== Role.admin) {
-      throw new ForbiddenException('Only administrators and HODs can unhide notices');
+      throw new ForbiddenException(
+        'Only administrators and HODs can unhide notices',
+      );
     }
 
     const updated = await this.prisma.notice.update({
@@ -398,7 +416,11 @@ export class NoticesService {
     });
 
     await this.audit.log(user, 'UNHIDE_NOTICE', 'Notice', id, notice.title);
-    return { success: true, message: 'Notice unhidden successfully', notice: this.mapNotice(updated) };
+    return {
+      success: true,
+      message: 'Notice unhidden successfully',
+      notice: this.mapNotice(updated),
+    };
   }
 
   private async assertHodOwnDepartment(user: SafeUser, notice: any) {
@@ -413,8 +435,14 @@ export class NoticesService {
       notice.targetDepartmentCode === userDept?.name;
     const matchesAuthor = notice.author?.departmentId === user.departmentId;
 
-    if (!matchesTarget && !matchesAuthor && notice.scope !== AudienceScope.faculty) {
-      throw new ForbiddenException('HOD can only moderate notices within their own department');
+    if (
+      !matchesTarget &&
+      !matchesAuthor &&
+      notice.scope !== AudienceScope.faculty
+    ) {
+      throw new ForbiddenException(
+        'HOD can only moderate notices within their own department',
+      );
     }
   }
 

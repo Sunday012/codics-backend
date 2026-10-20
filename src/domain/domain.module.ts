@@ -15,6 +15,8 @@ import { PastQuestionsController } from './past-questions.controller';
 import { PastQuestionsService } from './past-questions.service';
 import { ProgressController } from './progress.controller';
 import { ProgressService } from './progress.service';
+import { PushController } from './push.controller';
+import { PushService } from './push.service';
 import { SearchController } from './search.controller';
 import { SearchService } from './search.service';
 
@@ -29,6 +31,7 @@ import { SearchService } from './search.service';
     CalendarController,
     ProgressController,
     SearchController,
+    PushController,
   ],
   providers: [
     NoticesService,
@@ -40,6 +43,7 @@ import { SearchService } from './search.service';
     CalendarService,
     ProgressService,
     SearchService,
+    PushService,
   ],
 })
 export class DomainModule {}
