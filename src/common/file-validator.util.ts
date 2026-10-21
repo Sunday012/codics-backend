@@ -66,7 +66,8 @@ const OLE_EXTENSIONS = new Set(['.doc', '.ppt', '.xls']);
  * or unsafe characters.
  */
 export function sanitizeFileName(originalName: string): string {
-  const base = basename(originalName || 'document').replace(/\0/g, '');
+  const normalized = (originalName || 'document').replace(/\\/g, '/');
+  const base = basename(normalized).replace(/\0/g, '');
   const sanitized = base
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .replace(/_{2,}/g, '_')
