@@ -39,6 +39,12 @@ export class CoursesController {
     return this.courses.enrollments(user);
   }
 
+  @Roles('lecturer', 'hod', 'admin')
+  @Get('courses/teaching/me')
+  teachingOfferings(@CurrentUser() user: SafeUser) {
+    return this.courses.teachingOfferings(user);
+  }
+
   @Get('courses/:id')
   get(@Param('id') id: string, @Query('session') session?: string) {
     return this.courses.get(id, session);

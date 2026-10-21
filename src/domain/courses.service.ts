@@ -13,6 +13,7 @@ import {
 } from '@prisma/client';
 import { AuditService } from '../common/audit.service';
 import { StorageService } from '../common/storage.service';
+import { SafeUser } from '../common/user.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaterialDto, ModuleDto } from './courses.dto';
 
@@ -308,6 +309,53 @@ export class CoursesService {
         department: e.offering.course.department.name,
         level: String(e.offering.course.level),
       },
+    }));
+  }
+
+  async teachingOfferings(user: SafeUser) {
+    const where: any =
+      user.role === Role.lecturer
+        ? { lecturers: { some: { userId: user.id } } }
+        : user.departmentId
+          ? { course: { departmentId: user.departmentId } }
+          : {};
+
+    const offerings = await this.prisma.offering.findMany({
+      where,
+      include: {
+        course: { include: { department: true } },
+        lecturers: { include: { user: true } },
+        _count: {
+          select: {
+            enrollments: true,
+            assignments: true,
+            materials: true,
+            attendanceSessions: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return offerings.map((o) => ({
+      id: o.id,
+      courseId: o.courseId,
+      courseCode: o.course.code,
+      courseTitle: o.course.title,
+      level: String(o.course.level),
+      unit: o.course.units,
+      department: o.course.department.name,
+      session: o.session,
+      semester: o.semester === 'first' ? 'First Semester' : 'Second Semester',
+      enrolledCount: o._count.enrollments,
+      assignmentCount: o._count.assignments,
+      materialCount: o._count.materials,
+      attendanceSessionCount: o._count.attendanceSessions,
+      lecturers: o.lecturers.map((l) => ({
+        id: l.user.id,
+        name: l.user.fullName,
+        email: l.user.email,
+      })),
     }));
   }
 

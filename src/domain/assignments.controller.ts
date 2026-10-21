@@ -29,6 +29,12 @@ export class AssignmentsController {
     return this.assignments.list(user, query);
   }
 
+  @Roles('lecturer', 'hod', 'admin')
+  @Get('assignments/teaching/stats')
+  teachingStats(@CurrentUser() user: SafeUser) {
+    return this.assignments.getLecturerStats(user);
+  }
+
   @Get('assignments/:id')
   get(@Param('id') id: string, @CurrentUser() user: SafeUser) {
     return this.assignments.get(id, user);

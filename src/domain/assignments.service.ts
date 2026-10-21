@@ -171,6 +171,49 @@ export class AssignmentsService {
     return items.map((a) => this.mapAssignment(a));
   }
 
+  async getLecturerStats(user: SafeUser) {
+    const whereOffering =
+      user.role === Role.lecturer
+        ? { lecturers: { some: { userId: user.id } } }
+        : user.departmentId
+          ? { course: { departmentId: user.departmentId } }
+          : {};
+
+    const assignments = await this.prisma.assignment.findMany({
+      where: { offering: whereOffering },
+      include: {
+        submissions: {
+          select: {
+            id: true,
+            score: true,
+          },
+        },
+      },
+    });
+
+    let totalSubmissions = 0;
+    let pendingGrading = 0;
+    let gradedCount = 0;
+
+    for (const a of assignments) {
+      for (const s of a.submissions) {
+        totalSubmissions++;
+        if (s.score === null || s.score === undefined) {
+          pendingGrading++;
+        } else {
+          gradedCount++;
+        }
+      }
+    }
+
+    return {
+      totalAssignments: assignments.length,
+      totalSubmissions,
+      pendingGrading,
+      gradedCount,
+    };
+  }
+
   async get(id: string, user: SafeUser) {
     const assignment = await this.prisma.assignment.findUnique({
       where: { id },
