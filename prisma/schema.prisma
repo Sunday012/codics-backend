@@ -106,6 +106,32 @@ enum FileCategory {
   course_material
   assignment_submission
   past_question
+  onboarding_document
+}
+
+enum OnboardingStatus {
+  draft
+  submitted
+  under_review
+  action_required
+  verified
+  rejected
+  matriculated
+}
+
+enum OnboardingDocType {
+  jamb_result
+  o_level
+  birth_certificate
+  lga_identification
+  admission_letter
+  other
+}
+
+enum DocReviewStatus {
+  pending
+  verified
+  rejected
 }
 
 model Department {
@@ -117,6 +143,7 @@ model Department {
 
   users   User[]
   courses Course[]
+  onboardingApps OnboardingApplication[]
 }
 
 model Setting {
@@ -167,6 +194,10 @@ model User {
   uploadedFiles              StoredFile[]           @relation("UploadedFiles")
   materialProgress           UserMaterialProgress[]
   pushSubscriptions          PushSubscription[]
+  convertedOnboardingApp     OnboardingApplication?   @relation("ConvertedStudentApplication")
+  reviewedOnboardingDocs     OnboardingDocument[]     @relation("ReviewedOnboardingDocuments")
+  loggedOnboardingReviews    OnboardingReviewLog[]    @relation("LoggedOnboardingReviews")
+  publishedRegGuides         RegistrationGuide[]      @relation("PublishedRegistrationGuides")
 
   @@index([departmentId])
   @@index([role])
@@ -738,4 +769,101 @@ model PushSubscription {
 
   @@index([userId, isActive])
   @@index([isActive, urgentNotices])
+}
+
+model OnboardingApplication {
+  id                   String            @id @default(uuid())
+  applicationNumber    String            @unique
+  jambRegNo            String
+  fullName             String
+  email                String
+  phone                String?
+  departmentId         String
+  entryLevel           Int               @default(100)
+  session              String
+  status               OnboardingStatus  @default(draft)
+  actionRequiredReason String?
+  rejectionReason      String?
+  accessKeyHash        String
+  convertedUserId      String?           @unique
+  convertedMatricNo    String?
+  convertedAt          DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  department    Department            @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  convertedUser User?                 @relation("ConvertedStudentApplication", fields: [convertedUserId], references: [id], onDelete: SetNull)
+  documents     OnboardingDocument[]
+  reviewLogs    OnboardingReviewLog[]
+
+  @@unique([jambRegNo, session])
+  @@index([jambRegNo])
+  @@index([email])
+  @@index([departmentId])
+  @@index([status])
+  @@index([session])
+}
+
+model OnboardingDocument {
+  id            String            @id @default(uuid())
+  applicationId String
+  documentType  OnboardingDocType
+  title         String
+  fileKey       String            @unique
+  fileName      String
+  mimeType      String
+  sizeBytes     Int
+  sha256        String
+  status        DocReviewStatus   @default(pending)
+  reviewNotes   String?
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  application OnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  reviewer    User?                 @relation("ReviewedOnboardingDocuments", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@unique([applicationId, documentType])
+  @@index([applicationId])
+  @@index([status])
+  @@index([reviewedBy])
+}
+
+model OnboardingReviewLog {
+  id            String           @id @default(uuid())
+  applicationId String
+  reviewerId    String?
+  fromStatus    OnboardingStatus
+  toStatus      OnboardingStatus
+  action        String
+  notes         String?
+  createdAt     DateTime         @default(now())
+
+  application OnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  reviewer    User?                 @relation("LoggedOnboardingReviews", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([applicationId])
+  @@index([reviewerId])
+  @@index([createdAt])
+}
+
+model RegistrationGuide {
+  id                   String   @id @default(uuid())
+  title                String
+  session              String
+  targetDepartmentCode String?
+  steps                Json
+  importantNotice      String?
+  publishedBy          String
+  isPublished          Boolean  @default(true)
+  lastUpdatedDate      DateTime @default(now())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  publisher User @relation("PublishedRegistrationGuides", fields: [publishedBy], references: [id], onDelete: Cascade)
+
+  @@index([session])
+  @@index([targetDepartmentCode])
+  @@index([isPublished])
 }

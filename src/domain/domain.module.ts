@@ -11,6 +11,8 @@ import { CoursesController } from './courses.controller';
 import { CoursesService } from './courses.service';
 import { NoticesController } from './notices.controller';
 import { NoticesService } from './notices.service';
+import { OnboardingController } from './onboarding.controller';
+import { OnboardingService } from './onboarding.service';
 import { PastQuestionsController } from './past-questions.controller';
 import { PastQuestionsService } from './past-questions.service';
 import { ProgressController } from './progress.controller';
@@ -32,6 +34,7 @@ import { SearchService } from './search.service';
     ProgressController,
     SearchController,
     PushController,
+    OnboardingController,
   ],
   providers: [
     NoticesService,
@@ -44,6 +47,7 @@ import { SearchService } from './search.service';
     ProgressService,
     SearchService,
     PushService,
+    OnboardingService,
   ],
 })
 export class DomainModule {}

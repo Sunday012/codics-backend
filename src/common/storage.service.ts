@@ -74,6 +74,7 @@ const CATEGORY_TO_PREFIX: Record<FileCategory, StorageObjectCategory> = {
   [FileCategory.course_material]: 'course-materials',
   [FileCategory.assignment_submission]: 'submissions',
   [FileCategory.past_question]: 'past-questions',
+  [FileCategory.onboarding_document]: 'onboarding-docs',
 };
 
 /**

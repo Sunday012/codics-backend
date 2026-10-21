@@ -11,6 +11,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
 
+  app.enableShutdownHooks();
   app.setGlobalPrefix('api/v1');
   app.use(helmet());
   app.use(cookieParser());
@@ -36,9 +37,9 @@ async function bootstrap() {
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swagger));
 
   const port = config.get<number>('PORT', 3000);
-  await app.listen(port);
-  console.log(`CODICS API running at http://localhost:${port}/api/v1`);
-  console.log(`Swagger docs at http://localhost:${port}/docs`);
+  await app.listen(port, '0.0.0.0');
+  console.log(`CODICS API running at http://0.0.0.0:${port}/api/v1`);
+  console.log(`Swagger docs at http://0.0.0.0:${port}/docs`);
 }
 
 void bootstrap();

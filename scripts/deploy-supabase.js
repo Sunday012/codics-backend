@@ -20,7 +20,8 @@ if (!supabaseDirectUrl) {
 console.log('Deploying migrations to Supabase project (<redacted_host>)...');
 
 try {
-  const result = execSync('npx.cmd prisma migrate deploy', {
+  const prismaCmd = process.platform === 'win32' ? 'npx.cmd prisma migrate deploy' : 'npx prisma migrate deploy';
+  const result = execSync(prismaCmd, {
     env: {
       ...process.env,
       DIRECT_URL: supabaseDirectUrl,

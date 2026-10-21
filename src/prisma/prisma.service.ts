@@ -16,8 +16,10 @@ export class PrismaService
     const databaseUrl = config.getOrThrow<string>('DATABASE_URL');
     const isLocal =
       databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1');
+    const poolMax = Number(config.get<number>('DB_POOL_MAX', 10));
     const pool = new Pool({
       connectionString: databaseUrl,
+      max: poolMax,
       ssl: isLocal ? false : { rejectUnauthorized: false },
     });
     const adapter = new PrismaPg(pool);

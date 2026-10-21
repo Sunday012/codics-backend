@@ -5,7 +5,8 @@ import { basename, extname } from 'node:path';
 export type StorageObjectCategory =
   | 'course-materials'
   | 'submissions'
-  | 'past-questions';
+  | 'past-questions'
+  | 'onboarding-docs';
 
 export interface FileSignatureValidationResult {
   valid: boolean;
