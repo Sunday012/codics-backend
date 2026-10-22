@@ -26,12 +26,16 @@ import {
 } from '../common/file-validator.util';
 import {
   ApplyOnboardingDto,
+  BulkImportAdmissionsRosterDto,
   ConvertApplicationDto,
   QueryApplicationsDto,
+  ResolveExceptionDto,
   ReviewApplicationDto,
+  StudentOnboardSubmitDto,
   TrackOnboardingDto,
   UpdateRegistrationGuideDto,
 } from './onboarding.dto';
+import { AuthService } from '../auth/auth.service';
 import { SafeUser } from '../common/user.util';
 
 export const MANDATORY_ONBOARDING_DOCS: OnboardingDocType[] = [
@@ -60,6 +64,7 @@ export class OnboardingService {
     private readonly mail: MailService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly auth: AuthService,
   ) {
     this.jwtSecret = this.config.getOrThrow<string>('JWT_SECRET');
   }
@@ -1215,5 +1220,554 @@ export class OnboardingService {
         lastUpdatedDate: new Date(),
       },
     });
+  }
+
+  // ==========================================================================
+  // PHASE 12.4: STUDENT ONBOARDING, ADMISSIONS ROSTER MATCHING & EXCEPTIONS
+  // ==========================================================================
+
+  /**
+   * Bulk imports and validates admissions roster records.
+   * Authorized strictly for Admin and HOD (HOD restricted to their department).
+   */
+  async bulkImportAdmissionsRoster(
+    actor: SafeUser,
+    dto: BulkImportAdmissionsRosterDto,
+  ) {
+    const summary = {
+      total: dto.records.length,
+      imported: 0,
+      updated: 0,
+      skippedDuplicates: 0,
+      invalid: 0,
+      errors: [] as { row: number; identifier: string; reason: string }[],
+      dryRun: Boolean(dto.dryRun),
+    };
+
+    const departments = await this.prisma.department.findMany({
+      select: { id: true, code: true },
+    });
+    const deptCodeMap = new Map(departments.map((d) => [d.code.toUpperCase(), d.id]));
+
+    // Check HOD department scope
+    let allowedDeptCode: string | null = null;
+    if (actor.role === Role.hod && actor.departmentId) {
+      const hodDept = departments.find((d) => d.id === actor.departmentId);
+      if (hodDept) allowedDeptCode = hodDept.code.toUpperCase();
+    }
+
+    const seenJambs = new Set<string>();
+
+    for (let i = 0; i < dto.records.length; i++) {
+      const item = dto.records[i];
+      const rowNum = i + 1;
+      const jambRegNo = item.jambRegNo?.trim().toUpperCase();
+      const matricNo = item.matricNo?.trim().toUpperCase() || null;
+      const deptCode = item.departmentCode?.trim().toUpperCase();
+
+      if (!jambRegNo) {
+        summary.invalid++;
+        summary.errors.push({ row: rowNum, identifier: 'UNKNOWN', reason: 'Missing JAMB registration number' });
+        continue;
+      }
+
+      if (!deptCode || !deptCodeMap.has(deptCode)) {
+        summary.invalid++;
+        summary.errors.push({ row: rowNum, identifier: jambRegNo, reason: `Unrecognized department code: ${deptCode}` });
+        continue;
+      }
+
+      if (actor.role === Role.hod && allowedDeptCode && deptCode !== allowedDeptCode) {
+        summary.invalid++;
+        summary.errors.push({
+          row: rowNum,
+          identifier: jambRegNo,
+          reason: `HOD cannot import roster records for another department (${deptCode})`,
+        });
+        continue;
+      }
+
+      if (seenJambs.has(jambRegNo)) {
+        summary.skippedDuplicates++;
+        summary.errors.push({ row: rowNum, identifier: jambRegNo, reason: 'Duplicate JAMB number within same batch' });
+        continue;
+      }
+      seenJambs.add(jambRegNo);
+
+      if (!dto.dryRun) {
+        const existing = await this.prisma.admissionsRoster.findUnique({
+          where: { jambRegNo },
+        });
+
+        if (existing) {
+          if (existing.isClaimed) {
+            summary.skippedDuplicates++;
+            summary.errors.push({ row: rowNum, identifier: jambRegNo, reason: 'Record has already been claimed by a student' });
+            continue;
+          }
+
+          await this.prisma.admissionsRoster.update({
+            where: { jambRegNo },
+            data: {
+              fullName: item.fullName.trim(),
+              matricNo: matricNo || existing.matricNo,
+              email: item.email?.trim().toLowerCase() || existing.email,
+              phone: item.phone?.trim() || existing.phone,
+              departmentCode: deptCode,
+              level: item.level || existing.level,
+              session: item.session.trim(),
+              verificationKey: item.verificationKey?.trim() ? this.hashToken(item.verificationKey) : existing.verificationKey,
+              source: `imported_by_${actor.id}`,
+            },
+          });
+          summary.updated++;
+        } else {
+          await this.prisma.admissionsRoster.create({
+            data: {
+              jambRegNo,
+              matricNo,
+              fullName: item.fullName.trim(),
+              email: item.email?.trim().toLowerCase() || null,
+              phone: item.phone?.trim() || null,
+              departmentCode: deptCode,
+              level: item.level || 100,
+              session: item.session.trim(),
+              verificationKey: item.verificationKey?.trim() ? this.hashToken(item.verificationKey) : this.hashToken('default'),
+              source: `imported_by_${actor.id}`,
+            },
+          });
+          summary.imported++;
+        }
+      } else {
+        summary.imported++;
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Main student onboarding submission workflow.
+   * Matches candidate details against AdmissionsRoster or existing Student Roster.
+   * - If confident match: immediately completes onboarding, provisions/links user account, issues tokens.
+   * - If uncertain, conflicting, or missing: safely routes to exception queue (OnboardingApplication with status 'under_review' or 'action_required').
+   */
+  async submitStudentOnboarding(dto: StudentOnboardSubmitDto) {
+    const jambNorm = dto.jambRegNo?.trim().toUpperCase();
+    const matricNorm = dto.matricNo?.trim().toUpperCase();
+    const emailNorm = dto.email?.trim().toLowerCase();
+    const deptNorm = dto.departmentCode.trim().toUpperCase();
+    const fullName = `${dto.firstName.trim()} ${dto.middleName?.trim() ? dto.middleName.trim() + ' ' : ''}${dto.surname.trim()}`;
+
+    // Validate department existence
+    const department = await this.prisma.department.findFirst({
+      where: {
+        OR: [{ code: deptNorm }, { name: { equals: deptNorm, mode: 'insensitive' } }],
+      },
+    });
+
+    if (!department) {
+      throw new BadRequestException(`Department "${dto.departmentCode}" not found`);
+    }
+
+    // Step 1: Check if an existing User already has this matricNo or jamb
+    if (matricNorm) {
+      const existingUserByMatric = await this.prisma.user.findUnique({
+        where: { matricNo: matricNorm },
+        include: { department: true },
+      });
+
+      if (existingUserByMatric) {
+        if (existingUserByMatric.status === UserStatus.active) {
+          // Account already active! Do NOT create a duplicate or allow unauthorized claim.
+          // Route to account recovery/login, or route to exception queue if user claims to be someone else.
+          return {
+            status: 'CONFLICT_EXISTING_ACCOUNT',
+            message: 'An active account already exists with this matriculation number. Please log in or use account recovery.',
+            matricNo: matricNorm,
+          };
+        }
+
+        // Student exists with status 'invited' (pre-seeded on roster)
+        // Activate their account with this profile!
+        const activated = await this.prisma.user.update({
+          where: { id: existingUserByMatric.id },
+          data: {
+            fullName,
+            email: emailNorm || existingUserByMatric.email,
+            departmentId: department.id,
+            level: dto.level || existingUserByMatric.level || 100,
+            status: UserStatus.active,
+            activatedAt: new Date(),
+            lastLoginAt: new Date(),
+          },
+          include: { department: true },
+        });
+
+        const tokens = await this.auth.issueTokens(activated);
+        return {
+          status: 'SUCCESS_ONBOARDED',
+          message: 'Student account successfully matched and activated from institutional roster',
+          user: tokens.user,
+          tokens,
+        };
+      }
+    }
+
+    // Step 2: Try to match AdmissionsRoster by jambRegNo or matricNo
+    let rosterRecord = null;
+    if (jambNorm) {
+      rosterRecord = await this.prisma.admissionsRoster.findUnique({
+        where: { jambRegNo: jambNorm },
+      });
+    } else if (matricNorm) {
+      rosterRecord = await this.prisma.admissionsRoster.findUnique({
+        where: { matricNo: matricNorm },
+      });
+    }
+
+    // MATCH EVALUATION
+    if (rosterRecord) {
+      // Invariant: Already claimed record
+      if (rosterRecord.isClaimed) {
+        return {
+          status: 'EXCEPTION_RECORD_ALREADY_CLAIMED',
+          message: 'This admission record has already been claimed by another account. A review ticket has been created for faculty administration.',
+          applicationNumber: await this.createOrRouteException(dto, department.id, fullName, 'RECORD_ALREADY_CLAIMED'),
+        };
+      }
+
+      // Department Conflict Detection
+      if (rosterRecord.departmentCode !== department.code) {
+        return {
+          status: 'EXCEPTION_DEPARTMENT_MISMATCH',
+          message: `The submitted department (${department.code}) does not match the admitted department (${rosterRecord.departmentCode}). Routed to faculty exception review.`,
+          applicationNumber: await this.createOrRouteException(dto, department.id, fullName, 'DEPARTMENT_MISMATCH'),
+        };
+      }
+
+      // Dual-factor verification check if verificationKey exists
+      if (rosterRecord.verificationKey && rosterRecord.verificationKey !== this.hashToken('default')) {
+        if (!dto.verificationSecret || this.hashToken(dto.verificationSecret) !== rosterRecord.verificationKey) {
+          return {
+            status: 'EXCEPTION_VERIFICATION_MISMATCH',
+            message: 'Secondary verification secret did not match admissions record. Routed to faculty exception queue.',
+            applicationNumber: await this.createOrRouteException(dto, department.id, fullName, 'VERIFICATION_SECRET_MISMATCH'),
+          };
+        }
+      }
+
+      // SUCCESS: Confident match on AdmissionsRoster!
+      // Atomically claim roster entry and provision active student user
+      const finalMatric = rosterRecord.matricNo || matricNorm || null;
+
+      const { user } = await this.prisma.$transaction(async (tx) => {
+        // Atomic compare-and-swap on admissions record
+        const claimResult = await tx.admissionsRoster.updateMany({
+          where: { id: rosterRecord.id, isClaimed: false },
+          data: { isClaimed: true, claimedAt: new Date() },
+        });
+
+        if (claimResult.count === 0) {
+          throw new ConflictException('This admission record was claimed concurrently by another process');
+        }
+
+        const fallbackEmail = (jambNorm || rosterRecord.jambRegNo).toLowerCase();
+        const newUser = await tx.user.create({
+          data: {
+            fullName,
+            email: emailNorm || rosterRecord.email || `${fallbackEmail}@student.foc.edu.ng`,
+            matricNo: finalMatric,
+            role: Role.student,
+            baseRole: Role.student,
+            departmentId: department.id,
+            level: rosterRecord.level || dto.level || 100,
+            status: UserStatus.active,
+            activatedAt: new Date(),
+            lastLoginAt: new Date(),
+          },
+          include: { department: true },
+        });
+
+        await tx.admissionsRoster.update({
+          where: { id: rosterRecord.id },
+          data: { claimedByUserId: newUser.id },
+        });
+
+        return { user: newUser };
+      });
+
+      const tokens = await this.auth.issueTokens(user);
+      return {
+        status: 'SUCCESS_ONBOARDED',
+        message: 'Student record successfully matched against admissions roster. Welcome to CODICS!',
+        user: tokens.user,
+        tokens,
+      };
+    }
+
+    // Step 3: No matching record found in admissions roster -> Route to Exception Queue
+    const appNumber = await this.createOrRouteException(
+      dto,
+      department.id,
+      fullName,
+      'NOT_FOUND_ON_ROSTER',
+    );
+
+    return {
+      status: 'EXCEPTION_UNMATCHED_RECORD',
+      message: 'Your admission record could not be matched automatically. An exception request has been submitted to your department for verification.',
+      applicationNumber: appNumber,
+    };
+  }
+
+  /**
+   * Helper to create or update an OnboardingApplication in the exception queue.
+   */
+  private async createOrRouteException(
+    dto: StudentOnboardSubmitDto,
+    departmentId: string,
+    fullName: string,
+    reason: string,
+  ): Promise<string> {
+    const jambRegNo = (dto.jambRegNo || `APP/${randomBytes(4).toString('hex').toUpperCase()}`).toUpperCase();
+    const currentSetting = await this.prisma.setting.findFirst({ orderBy: { updatedAt: 'desc' } });
+    const session = currentSetting?.session || '2026/2027';
+
+    const existingApp = await this.prisma.onboardingApplication.findFirst({
+      where: { jambRegNo, session },
+    });
+
+    if (existingApp) {
+      await this.prisma.onboardingApplication.update({
+        where: { id: existingApp.id },
+        data: {
+          fullName,
+          phone: dto.phone || existingApp.phone,
+          status: OnboardingStatus.under_review,
+          actionRequiredReason: `Exception: ${reason}`,
+        },
+      });
+      return existingApp.applicationNumber;
+    }
+
+    const appNumber = `FOC-${session.slice(0, 4)}-${randomBytes(3).toString('hex').toUpperCase()}`;
+    const newApp = await this.prisma.onboardingApplication.create({
+      data: {
+        applicationNumber: appNumber,
+        jambRegNo,
+        fullName,
+        email: dto.email?.trim().toLowerCase() || `${jambRegNo.toLowerCase()}@candidate.foc.edu.ng`,
+        phone: dto.phone?.trim() || null,
+        departmentId,
+        entryLevel: dto.level || 100,
+        session,
+        status: OnboardingStatus.under_review,
+        actionRequiredReason: `Exception: ${reason}`,
+        accessKeyHash: this.hashToken(randomBytes(16).toString('hex')),
+      },
+    });
+
+    return newApp.applicationNumber;
+  }
+
+  /**
+   * Lists exception cases for authorized review (Admin & HOD).
+   * Enforces department scoping: HOD can only see cases in their department.
+   */
+  async listExceptionCases(actor: SafeUser, query: QueryApplicationsDto) {
+    const page = Math.max(1, Number(query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(query.limit || 20)));
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+
+    // Scoping
+    if (actor.role === Role.hod && actor.departmentId) {
+      where.departmentId = actor.departmentId;
+    } else if (query.departmentId) {
+      where.departmentId = query.departmentId;
+    }
+
+    if (query.status) {
+      where.status = query.status;
+    } else {
+      // By default list active review exceptions
+      where.status = { in: [OnboardingStatus.under_review, OnboardingStatus.action_required] };
+    }
+
+    if (query.search) {
+      const s = query.search.trim();
+      where.OR = [
+        { fullName: { contains: s, mode: 'insensitive' } },
+        { applicationNumber: { contains: s, mode: 'insensitive' } },
+        { jambRegNo: { contains: s, mode: 'insensitive' } },
+        { email: { contains: s, mode: 'insensitive' } },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.onboardingApplication.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { updatedAt: 'desc' },
+        include: {
+          department: { select: { id: true, name: true, code: true } },
+          documents: { select: { id: true, documentType: true, title: true, status: true } },
+        },
+      }),
+      this.prisma.onboardingApplication.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  /**
+   * Resolves an onboarding exception case (APPROVE, REJECT, REQUEST_INFO).
+   * Authorized strictly for Admin and HOD.
+   */
+  async resolveExceptionCase(
+    actor: SafeUser,
+    applicationId: string,
+    dto: ResolveExceptionDto,
+  ) {
+    const app = await this.prisma.onboardingApplication.findUnique({
+      where: { id: applicationId },
+      include: { department: true },
+    });
+
+    if (!app) {
+      throw new NotFoundException('Exception application not found');
+    }
+
+    // Scoping enforcement
+    if (actor.role === Role.hod && actor.departmentId && app.departmentId !== actor.departmentId) {
+      throw new ForbiddenException('HOD can only resolve exception cases within their department');
+    }
+
+    if (dto.action === 'APPROVE') {
+      const assignedMatric = dto.assignedMatricNo?.trim().toUpperCase() || app.convertedMatricNo || null;
+
+      // Invariant: check if matric is already used
+      if (assignedMatric) {
+        const existing = await this.prisma.user.findUnique({ where: { matricNo: assignedMatric } });
+        if (existing && existing.id !== app.convertedUserId) {
+          throw new ConflictException(`Matriculation number ${assignedMatric} is already assigned to another user`);
+        }
+      }
+
+      return this.prisma.$transaction(async (tx) => {
+        // Create or activate student account
+        let studentUser = app.convertedUserId
+          ? await tx.user.findUnique({ where: { id: app.convertedUserId } })
+          : null;
+
+        if (!studentUser) {
+          studentUser = await tx.user.create({
+            data: {
+              fullName: app.fullName,
+              email: app.email,
+              matricNo: assignedMatric,
+              role: Role.student,
+              baseRole: Role.student,
+              departmentId: app.departmentId,
+              level: dto.assignedLevel || app.entryLevel || 100,
+              status: UserStatus.active,
+              activatedAt: new Date(),
+            },
+          });
+        } else {
+          studentUser = await tx.user.update({
+            where: { id: studentUser.id },
+            data: {
+              status: UserStatus.active,
+              matricNo: assignedMatric || studentUser.matricNo,
+              level: dto.assignedLevel || studentUser.level,
+            },
+          });
+        }
+
+        const updatedApp = await tx.onboardingApplication.update({
+          where: { id: app.id },
+          data: {
+            status: OnboardingStatus.verified,
+            convertedUserId: studentUser.id,
+            convertedMatricNo: assignedMatric,
+            convertedAt: new Date(),
+            actionRequiredReason: null,
+          },
+        });
+
+        await tx.onboardingReviewLog.create({
+          data: {
+            applicationId: app.id,
+            reviewerId: actor.id,
+            fromStatus: app.status,
+            toStatus: OnboardingStatus.verified,
+            action: 'APPROVE_EXCEPTION',
+            notes: dto.notes?.trim() || 'Approved by departmental authority',
+          },
+        });
+
+        return {
+          status: 'VERIFIED',
+          applicationId: updatedApp.id,
+          userId: studentUser.id,
+          matricNo: assignedMatric,
+        };
+      });
+    }
+
+    if (dto.action === 'REJECT') {
+      const updated = await this.prisma.onboardingApplication.update({
+        where: { id: app.id },
+        data: {
+          status: OnboardingStatus.rejected,
+          rejectionReason: dto.notes?.trim() || 'Identity claims could not be verified by faculty administration',
+        },
+      });
+
+      await this.prisma.onboardingReviewLog.create({
+        data: {
+          applicationId: app.id,
+          reviewerId: actor.id,
+          fromStatus: app.status,
+          toStatus: OnboardingStatus.rejected,
+          action: 'REJECT_EXCEPTION',
+          notes: dto.notes?.trim(),
+        },
+      });
+
+      return { status: 'REJECTED', applicationId: updated.id };
+    }
+
+    // REQUEST_INFO
+    const updated = await this.prisma.onboardingApplication.update({
+      where: { id: app.id },
+      data: {
+        status: OnboardingStatus.action_required,
+        actionRequiredReason: dto.notes?.trim() || 'Additional verification documents required',
+      },
+    });
+
+    await this.prisma.onboardingReviewLog.create({
+      data: {
+        applicationId: app.id,
+        reviewerId: actor.id,
+        fromStatus: app.status,
+        toStatus: OnboardingStatus.action_required,
+        action: 'REQUEST_ADDITIONAL_INFO',
+        notes: dto.notes?.trim(),
+      },
+    });
+
+    return { status: 'ACTION_REQUIRED', applicationId: updated.id };
   }
 }

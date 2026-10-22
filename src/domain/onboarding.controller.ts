@@ -20,9 +20,12 @@ import { SafeUser } from '../common/user.util';
 import { OnboardingService } from './onboarding.service';
 import {
   ApplyOnboardingDto,
+  BulkImportAdmissionsRosterDto,
   ConvertApplicationDto,
   QueryApplicationsDto,
+  ResolveExceptionDto,
   ReviewApplicationDto,
+  StudentOnboardSubmitDto,
   TrackOnboardingDto,
   UpdateRegistrationGuideDto,
   UploadOnboardingDocDto,
@@ -227,5 +230,46 @@ export class OnboardingController {
     @Body() dto: UpdateRegistrationGuideDto,
   ) {
     return this.onboarding.updateRegistrationGuide(user, dto);
+  }
+
+  // --------------------------------------------------------------------------
+  // PHASE 12.4: STUDENT ONBOARDING, ROSTER MATCHING & EXCEPTIONS
+  // --------------------------------------------------------------------------
+
+  @Public()
+  @Post('submit')
+  submitStudentOnboarding(@Body() dto: StudentOnboardSubmitDto) {
+    return this.onboarding.submitStudentOnboarding(dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.admin, Role.hod)
+  @Post('admin/roster/import')
+  bulkImportAdmissionsRoster(
+    @CurrentUser() user: SafeUser,
+    @Body() dto: BulkImportAdmissionsRosterDto,
+  ) {
+    return this.onboarding.bulkImportAdmissionsRoster(user, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.admin, Role.hod)
+  @Get('admin/exceptions')
+  listExceptionCases(
+    @CurrentUser() user: SafeUser,
+    @Query() query: QueryApplicationsDto,
+  ) {
+    return this.onboarding.listExceptionCases(user, query);
+  }
+
+  @ApiBearerAuth()
+  @Roles(Role.admin, Role.hod)
+  @Post('admin/exceptions/:id/resolve')
+  resolveExceptionCase(
+    @Param('id') id: string,
+    @CurrentUser() user: SafeUser,
+    @Body() dto: ResolveExceptionDto,
+  ) {
+    return this.onboarding.resolveExceptionCase(user, id, dto);
   }
 }

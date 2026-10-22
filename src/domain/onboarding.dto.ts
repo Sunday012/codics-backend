@@ -189,3 +189,121 @@ export class QueryApplicationsDto {
   @Max(100)
   limit?: number;
 }
+
+export class StudentOnboardSubmitDto {
+  @IsString()
+  @IsNotEmpty()
+  firstName!: string;
+
+  @IsOptional()
+  @IsString()
+  middleName?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  surname!: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  departmentCode!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsIn([100, 200, 300, 400, 500])
+  level?: number;
+
+  @IsOptional()
+  @IsString()
+  matricNo?: string;
+
+  @IsOptional()
+  @IsString()
+  jambRegNo?: string;
+
+  @IsOptional()
+  @IsString()
+  verificationSecret?: string; // Optional Date of birth or phone secret
+
+  @IsOptional()
+  @IsString()
+  googleIdToken?: string;
+}
+
+export class AdmissionsRosterItemDto {
+  @IsString()
+  @IsNotEmpty()
+  jambRegNo!: string;
+
+  @IsOptional()
+  @IsString()
+  matricNo?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  fullName!: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  departmentCode!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  level?: number;
+
+  @IsString()
+  @IsNotEmpty()
+  session!: string;
+
+  @IsOptional()
+  @IsString()
+  verificationKey?: string;
+}
+
+export class BulkImportAdmissionsRosterDto {
+  @IsArray()
+  records!: AdmissionsRosterItemDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
+export class ResolveExceptionDto {
+  @IsString()
+  @IsIn(['APPROVE', 'REJECT', 'REQUEST_INFO'])
+  action!: 'APPROVE' | 'REJECT' | 'REQUEST_INFO';
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
+  @IsString()
+  assignedMatricNo?: string;
+
+  @IsOptional()
+  @IsString()
+  assignedDepartmentCode?: string;
+
+  @IsOptional()
+  @IsInt()
+  assignedLevel?: number;
+}

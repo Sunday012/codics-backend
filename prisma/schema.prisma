@@ -920,6 +920,7 @@ model AdmissionsRoster {
   matricNo        String?   @unique
   fullName        String
   email           String?
+  phone           String?
   departmentCode  String
   level           Int       @default(100)
   session         String
@@ -927,6 +928,7 @@ model AdmissionsRoster {
   isClaimed       Boolean   @default(false)
   claimedAt       DateTime?
   claimedByUserId String?   @unique
+  source          String    @default("admin_import")
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
