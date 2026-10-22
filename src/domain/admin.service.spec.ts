@@ -45,6 +45,12 @@ describe('AdminService - Phase 2 Scope & Bulk Import', () => {
       offering: {
         findUnique: jest.fn(),
       },
+      roleAssignment: {
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+        count: jest.fn(),
+      },
       enrollment: {
         findUnique: jest.fn(),
         findMany: jest.fn(),
@@ -266,6 +272,164 @@ describe('AdminService - Phase 2 Scope & Bulk Import', () => {
           type: 'regular',
         }),
       ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('endRole & role term revocation safety (Phase 12.1 Bug Fix)', () => {
+    it('restores user to lecturer baseRole instead of demoting to student when ending HOD role', async () => {
+      prisma.roleAssignment.findUnique.mockResolvedValue({
+        id: 'role-assign-1',
+        userId: 'usr-staff-1',
+        role: Role.hod,
+        user: {
+          id: 'usr-staff-1',
+          fullName: 'Dr. Okon',
+          role: Role.hod,
+          baseRole: Role.lecturer,
+          staffId: 'STAFF/001',
+        },
+      });
+
+      let updatedUserData: any = null;
+      prisma.$transaction.mockImplementation(async (callback: any) => {
+        const tx = {
+          roleAssignment: {
+            update: jest.fn().mockResolvedValue({ id: 'role-assign-1', isActive: false }),
+            findMany: jest.fn().mockResolvedValue([]), // No other active role assignments
+          },
+          user: {
+            update: jest.fn().mockImplementation((args) => {
+              updatedUserData = args.data;
+              return { id: 'usr-staff-1', ...args.data };
+            }),
+          },
+        };
+        return callback(tx);
+      });
+
+      const res = await service.endRole(adminActor, 'role-assign-1');
+
+      expect(res.id).toBe('role-assign-1');
+      expect(updatedUserData).not.toBeNull();
+      // Crucial verification: user must NOT be demoted to student!
+      expect(updatedUserData.role).toBe(Role.lecturer);
+      expect(updatedUserData.repTermStart).toBeNull();
+      expect(updatedUserData.repTermEnd).toBeNull();
+    });
+
+    it('reverts course_rep to student when their assignment ends and they have no other roles', async () => {
+      prisma.roleAssignment.findUnique.mockResolvedValue({
+        id: 'role-assign-rep',
+        userId: 'usr-stud-1',
+        role: Role.course_rep,
+        user: {
+          id: 'usr-stud-1',
+          fullName: 'Chidi Student',
+          role: Role.course_rep,
+          baseRole: Role.student,
+          matricNo: 'CSC/2022/001',
+        },
+      });
+
+      let updatedUserData: any = null;
+      prisma.$transaction.mockImplementation(async (callback: any) => {
+        const tx = {
+          roleAssignment: {
+            update: jest.fn().mockResolvedValue({ id: 'role-assign-rep', isActive: false }),
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+          user: {
+            update: jest.fn().mockImplementation((args) => {
+              updatedUserData = args.data;
+              return { id: 'usr-stud-1', ...args.data };
+            }),
+          },
+        };
+        return callback(tx);
+      });
+
+      await service.endRole(adminActor, 'role-assign-rep');
+
+      expect(updatedUserData).not.toBeNull();
+      expect(updatedUserData.role).toBe(Role.student);
+    });
+
+    it('reverts admin stepping down to remaining active HOD assignment if one exists', async () => {
+      prisma.roleAssignment.findUnique.mockResolvedValue({
+        id: 'role-assign-admin',
+        userId: 'usr-multi-1',
+        role: Role.admin,
+        user: {
+          id: 'usr-multi-1',
+          fullName: 'Prof. Multi',
+          role: Role.admin,
+          baseRole: Role.lecturer,
+        },
+      });
+
+      prisma.roleAssignment.count.mockResolvedValue(2); // Active admin count > 1
+
+      let updatedUserData: any = null;
+      prisma.$transaction.mockImplementation(async (callback: any) => {
+        const tx = {
+          roleAssignment: {
+            update: jest.fn().mockResolvedValue({ id: 'role-assign-admin', isActive: false }),
+            findMany: jest.fn().mockResolvedValue([
+              { id: 'role-assign-hod', role: Role.hod, isActive: true },
+            ]),
+          },
+          user: {
+            update: jest.fn().mockImplementation((args) => {
+              updatedUserData = args.data;
+              return { id: 'usr-multi-1', ...args.data };
+            }),
+          },
+        };
+        return callback(tx);
+      });
+
+      await service.endRole(adminActor, 'role-assign-admin');
+
+      expect(updatedUserData).not.toBeNull();
+      expect(updatedUserData.role).toBe(Role.hod);
+    });
+
+    it('preserves staff baseRole when user.baseRole was defaulted to student but user has staffId (Follow-up Check 1)', async () => {
+      prisma.roleAssignment.findUnique.mockResolvedValue({
+        id: 'role-assign-unmigrated',
+        userId: 'usr-legacy-staff',
+        role: Role.hod,
+        user: {
+          id: 'usr-legacy-staff',
+          fullName: 'Dr. Legacy Staff',
+          role: Role.hod,
+          baseRole: Role.student, // Unmigrated default!
+          staffId: 'STAFF/099',
+        },
+      });
+
+      let updatedUserData: any = null;
+      prisma.$transaction.mockImplementation(async (callback: any) => {
+        const tx = {
+          roleAssignment: {
+            update: jest.fn().mockResolvedValue({ id: 'role-assign-unmigrated', isActive: false }),
+            findMany: jest.fn().mockResolvedValue([]),
+          },
+          user: {
+            update: jest.fn().mockImplementation((args) => {
+              updatedUserData = args.data;
+              return { id: 'usr-legacy-staff', ...args.data };
+            }),
+          },
+        };
+        return callback(tx);
+      });
+
+      await service.endRole(adminActor, 'role-assign-unmigrated');
+
+      expect(updatedUserData).not.toBeNull();
+      // Must preserve actual lecturer role based on staffId, NOT demote to student
+      expect(updatedUserData.role).toBe(Role.lecturer);
     });
   });
 });

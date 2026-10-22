@@ -21,6 +21,8 @@ import { PushController } from './push.controller';
 import { PushService } from './push.service';
 import { SearchController } from './search.controller';
 import { SearchService } from './search.service';
+import { StaffInvitationController } from './staff-invitation.controller';
+import { StaffInvitationService } from './staff-invitation.service';
 
 @Module({
   controllers: [
@@ -35,6 +37,7 @@ import { SearchService } from './search.service';
     SearchController,
     PushController,
     OnboardingController,
+    StaffInvitationController,
   ],
   providers: [
     NoticesService,
@@ -48,6 +51,7 @@ import { SearchService } from './search.service';
     SearchService,
     PushService,
     OnboardingService,
+    StaffInvitationService,
   ],
 })
 export class DomainModule {}

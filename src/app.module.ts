@@ -27,6 +27,8 @@ import { TimeController } from './time.controller';
       { name: 'login', ttl: 60000, limit: 5 },
       { name: 'activate', ttl: 60000, limit: 5 },
       { name: 'refresh', ttl: 60000, limit: 20 },
+      { name: 'inviteCreate', ttl: 60000, limit: process.env.NODE_ENV === 'test' ? 1000 : 10 },
+      { name: 'inviteAccept', ttl: 60000, limit: process.env.NODE_ENV === 'test' ? 1000 : 5 },
     ]),
     PrismaModule,
     CommonModule,

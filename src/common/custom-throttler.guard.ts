@@ -23,6 +23,15 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
     if (throttler.name === 'refresh' && handlerName !== 'refresh') {
       return true;
     }
+    if (throttler.name === 'inviteCreate' && handlerName !== 'create') {
+      return true;
+    }
+    if (
+      throttler.name === 'inviteAccept' &&
+      !['accept', 'verify', 'verifyGet'].includes(handlerName)
+    ) {
+      return true;
+    }
 
     return super.handleRequest(requestProps);
   }
@@ -40,6 +49,10 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
     if (req.body?.matricNo) {
       const matric = String(req.body.matricNo).trim().toLowerCase();
       return `${rawIp}:${matric}`;
+    }
+    if (req.body?.email) {
+      const email = String(req.body.email).trim().toLowerCase();
+      return `${rawIp}:${email}`;
     }
     return rawIp;
   }

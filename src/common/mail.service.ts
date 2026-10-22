@@ -5,7 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 export type EmailTemplateType =
   | 'activation_code'
   | 'password_reset'
-  | 'account_approved';
+  | 'account_approved'
+  | 'staff_invitation';
 
 export interface TransactionalEmailPayload {
   to: string;
@@ -649,6 +650,70 @@ export class MailService implements IMailService {
       html,
       text,
       template: 'account_approved',
+      idempotencyKey,
+    });
+  }
+
+  async sendStaffInvitation(
+    email: string,
+    invitationUrl: string,
+    context: {
+      fullName: string;
+      role: string;
+      departmentName: string;
+      inviterName: string;
+      expiresAt: Date;
+    },
+  ): Promise<EmailDeliveryReceipt> {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanUrl = (invitationUrl || '').trim();
+    const idempotencyKey = `invite:${createHash('sha256').update(`${cleanEmail}:${cleanUrl}`).digest('hex')}`;
+
+    const formattedRole = context.role.replace(/_/g, ' ').toUpperCase();
+    const expiryStr = context.expiresAt.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    const bodyHtml = `
+      <p style="margin: 0 0 12px 0;">You have been officially invited by <strong>${escapeHtml(context.inviterName)}</strong> to join the Faculty of Computing as a <strong>${escapeHtml(formattedRole)}</strong> in the <strong>${escapeHtml(context.departmentName)}</strong> department.</p>
+      <p style="margin: 0 0 12px 0;">Please click the button below to accept your invitation, verify your credentials, and activate your faculty staff account.</p>
+      <p style="margin: 0 0 8px 0; font-size: 13px; color: #64748B;">This invitation is single-use and will expire on <strong>${escapeHtml(expiryStr)}</strong>.</p>
+    `;
+
+    const text = [
+      'CODICS Staff Invitation',
+      '----------------------------------------',
+      `Hello ${context.fullName},`,
+      '',
+      `You have been invited by ${context.inviterName} to join the Faculty of Computing as a ${formattedRole} in the ${context.departmentName} department.`,
+      '',
+      `Complete your staff onboarding at: ${cleanUrl}`,
+      '',
+      `This invitation link is single-use and expires on ${expiryStr}.`,
+      'If you did not expect this invitation, please contact the faculty administration immediately.',
+    ].join('\n');
+
+    const html = this.renderBrandedLayout({
+      preheader: `Official staff invitation to join Faculty of Computing as ${formattedRole}.`,
+      heading: 'Faculty Staff Invitation',
+      greeting: `Hello ${context.fullName},`,
+      bodyHtml,
+      ctaLabel: 'Accept Staff Invitation',
+      ctaUrl: cleanUrl,
+      footerNote:
+        'If you did not expect this invitation, please disregard this email or contact support.',
+    });
+
+    return this.dispatchWithRetry({
+      to: cleanEmail,
+      from: this.fromHeader,
+      replyTo: this.replyTo,
+      subject: `Official Invitation: Join Faculty of Computing as ${formattedRole}`,
+      html,
+      text,
+      template: 'staff_invitation',
       idempotencyKey,
     });
   }

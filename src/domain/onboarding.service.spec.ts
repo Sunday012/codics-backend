@@ -48,8 +48,8 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
           return Promise.resolve(null);
         }),
         findFirst: jest.fn().mockImplementation(({ where }: any) => {
-          if (where?.id === 'dept-cs') return Promise.resolve(mockDepartmentCs);
-          if (where?.OR?.some((cond: any) => cond.id === 'dept-cs' || cond.code?.equals === 'CSC')) {
+          if (where?.id === 'dept-cs' || where?.code === 'CSC') return Promise.resolve(mockDepartmentCs);
+          if (where?.OR?.some((cond: any) => cond.id === 'dept-cs' || cond.code === 'CSC' || cond.code?.equals === 'CSC')) {
             return Promise.resolve(mockDepartmentCs);
           }
           return Promise.resolve(null);
@@ -82,6 +82,18 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
         create: jest.fn(),
         update: jest.fn(),
       },
+      admissionsRoster: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        findMany: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+        count: jest.fn(),
+      },
+      setting: {
+        findFirst: jest.fn().mockResolvedValue({ session: '2026/2027', semester: 'first' }),
+      },
       $transaction: jest.fn().mockImplementation((cb: any) => cb(mockPrisma)),
     };
 
@@ -104,12 +116,21 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
       getOrThrow: jest.fn().mockReturnValue('test-jwt-secret-min-32-characters'),
     };
 
+    const mockAuthService: any = {
+      issueTokens: jest.fn().mockImplementation((u: any) => ({
+        user: { id: u.id, fullName: u.fullName, email: u.email, role: u.role },
+        accessToken: 'mock-access-token',
+        refreshToken: 'mock-refresh-token',
+      })),
+    };
+
     service = new OnboardingService(
       mockPrisma,
       mockStorage,
       mockMail,
       mockJwt,
       mockConfig,
+      mockAuthService,
     );
   });
 
@@ -511,6 +532,211 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
       expect(guide.importantNotice).toContain('CODICS is a guided workflow portal');
       expect(steps[0].officialPortalUrl).toContain('waeup.uniben.edu');
       expect(steps[0].warning).toContain('Never pay cash or transfer funds');
+    });
+  });
+
+  describe('8. Phase 12.4: Admissions Roster Import, Student Matching & Exception Management', () => {
+    describe('bulkImportAdmissionsRoster', () => {
+      it('successfully imports valid records and validates department scoping for Admin', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValue(null);
+        mockPrisma.admissionsRoster.create.mockResolvedValue({ id: 'adm-1' });
+
+        const res = await service.bulkImportAdmissionsRoster(mockAdminUser, {
+          records: [
+            {
+              jambRegNo: '202611112222AA',
+              fullName: 'Aisha Bello',
+              departmentCode: 'CSC',
+              session: '2026/2027',
+              level: 100,
+            },
+          ],
+        });
+
+        expect(res.total).toBe(1);
+        expect(res.imported).toBe(1);
+        expect(res.invalid).toBe(0);
+        expect(mockPrisma.admissionsRoster.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              jambRegNo: '202611112222AA',
+              departmentCode: 'CSC',
+            }),
+          }),
+        );
+      });
+
+      it('prevents HOD from importing roster records for another department', async () => {
+        // mockHodOther has departmentId 'dept-cyber' (code CYB)
+        mockPrisma.department.findMany.mockResolvedValueOnce([
+          { id: 'dept-cyber', code: 'CYB' },
+          { id: 'dept-cs', code: 'CSC' },
+        ]);
+
+        const res = await service.bulkImportAdmissionsRoster(mockHodOther, {
+          records: [
+            {
+              jambRegNo: '202611112222AA',
+              fullName: 'Aisha Bello',
+              departmentCode: 'CSC', // HOD belongs to CYB!
+              session: '2026/2027',
+            },
+          ],
+        });
+
+        expect(res.invalid).toBe(1);
+        expect(res.errors[0].reason).toContain('HOD cannot import roster records for another department');
+      });
+    });
+
+    describe('submitStudentOnboarding (Matching Engine)', () => {
+      it('successfully fast-tracks newly admitted student with zero document uploads when matching admissions roster', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-1',
+          jambRegNo: '202699998888ZZ',
+          matricNo: null,
+          fullName: 'Emeka Chukwuma',
+          departmentCode: 'CSC',
+          level: 100,
+          isClaimed: false,
+          verificationKey: '37a8eec1ce19687d132fe29051dca629d164e2c4958ba141d5f4133a33f0688f', // hash of 'default'
+        });
+
+        mockPrisma.admissionsRoster.updateMany.mockResolvedValueOnce({ count: 1 });
+        mockPrisma.user.create.mockResolvedValueOnce({
+          id: 'usr-new-student',
+          fullName: 'Emeka Chukwuma',
+          role: Role.student,
+          status: UserStatus.active,
+          department: mockDepartmentCs,
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Emeka',
+          surname: 'Chukwuma',
+          departmentCode: 'CSC',
+          jambRegNo: '202699998888ZZ',
+        });
+
+        expect(res.status).toBe('SUCCESS_ONBOARDED');
+        expect(res.message).toContain('Student record successfully matched against admissions roster');
+        expect((res as any).tokens).toBeDefined();
+      });
+
+      it('activates existing student record when matric number matches invited student on roster', async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+          id: 'usr-invited-1',
+          matricNo: 'CSC/2022/100',
+          status: UserStatus.invited,
+          role: Role.student,
+        });
+
+        mockPrisma.user.update.mockResolvedValueOnce({
+          id: 'usr-invited-1',
+          fullName: 'Ibrahim Musa',
+          status: UserStatus.active,
+          role: Role.student,
+          department: mockDepartmentCs,
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Ibrahim',
+          surname: 'Musa',
+          matricNo: 'CSC/2022/100',
+          departmentCode: 'CSC',
+        });
+
+        expect(res.status).toBe('SUCCESS_ONBOARDED');
+        expect(res.message).toContain('Student account successfully matched and activated');
+      });
+
+      it('prevents claiming an already claimed admissions record and routes to exception queue', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-claimed',
+          jambRegNo: '202688887777XX',
+          isClaimed: true,
+          departmentCode: 'CSC',
+        });
+
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+        mockPrisma.onboardingApplication.create.mockResolvedValueOnce({
+          applicationNumber: 'FOC-2026-CLAIM1',
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Pretender',
+          surname: 'User',
+          jambRegNo: '202688887777XX',
+          departmentCode: 'CSC',
+        });
+
+        expect(res.status).toBe('EXCEPTION_RECORD_ALREADY_CLAIMED');
+        expect(res.message).toContain('already been claimed by another account');
+      });
+
+      it('routes unmatched student to exception queue without granting academic access', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce(null); // Not on roster
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+        mockPrisma.onboardingApplication.create.mockResolvedValueOnce({
+          applicationNumber: 'FOC-2026-EXCP01',
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Unmatched',
+          surname: 'Candidate',
+          jambRegNo: '202600000000UN',
+          departmentCode: 'CSC',
+        });
+
+        expect(res.status).toBe('EXCEPTION_UNMATCHED_RECORD');
+        expect(res.message).toContain('Your admission record could not be matched automatically');
+        expect((res as any).tokens).toBeUndefined(); // Crucial: no access token issued!
+      });
+    });
+
+    describe('resolveExceptionCase (Staff Review)', () => {
+      it('allows authorized Admin/HOD to approve an exception case and provision student record', async () => {
+        mockPrisma.onboardingApplication.findUnique.mockResolvedValueOnce({
+          id: 'app-excp-1',
+          fullName: 'Amina Review',
+          email: 'amina@foc.edu.ng',
+          departmentId: 'dept-cs',
+          status: OnboardingStatus.under_review,
+        });
+
+        mockPrisma.user.findUnique.mockResolvedValueOnce(null); // No existing matric conflict
+        mockPrisma.user.create.mockResolvedValueOnce({
+          id: 'usr-student-approved',
+          fullName: 'Amina Review',
+          role: Role.student,
+          status: UserStatus.active,
+        });
+        mockPrisma.onboardingApplication.update.mockResolvedValueOnce({
+          id: 'app-excp-1',
+          status: OnboardingStatus.verified,
+        });
+
+        const res = await service.resolveExceptionCase(mockAdminUser, 'app-excp-1', {
+          action: 'APPROVE',
+          assignedMatricNo: 'CSC/2026/999',
+        });
+
+        expect(res.status).toBe('VERIFIED');
+        expect((res as any).userId).toBe('usr-student-approved');
+        expect(mockPrisma.onboardingReviewLog.create).toHaveBeenCalled();
+      });
+
+      it('prevents HOD from resolving exception cases belonging to another department', async () => {
+        mockPrisma.onboardingApplication.findUnique.mockResolvedValueOnce({
+          id: 'app-excp-cs',
+          departmentId: 'dept-cs',
+        });
+
+        // mockHodOther has departmentId 'dept-cyber'
+        await expect(
+          service.resolveExceptionCase(mockHodOther, 'app-excp-cs', { action: 'APPROVE' }),
+        ).rejects.toThrow(ForbiddenException);
+      });
     });
   });
 });
