@@ -56,3 +56,24 @@ export class ResetPasswordDto {
   @IsStrongPasswordRules()
   newPassword!: string;
 }
+
+export class GoogleAuthDto {
+  @IsString()
+  idToken!: string;
+}
+
+export class LinkGoogleDto {
+  @IsString()
+  idToken!: string;
+
+  @IsString()
+  identifier!: string;
+
+  @IsString()
+  password!: string;
+}
+
+export class UnlinkGoogleDto {
+  @IsString()
+  password!: string;
+}

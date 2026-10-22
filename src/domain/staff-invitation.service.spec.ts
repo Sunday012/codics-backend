@@ -674,7 +674,7 @@ describe('Phase 12.2: Staff Invitations Implementation', () => {
         getOrThrow: jest.fn(() => 'jwt-test-secret'),
         get: jest.fn((key: string, def?: any) => def ?? 'mock-val'),
       };
-      const mockAuthService = new AuthService(null as any, null as any, mockConfig, null as any);
+      const mockAuthService = new AuthService(null as any, null as any, mockConfig, null as any, null as any);
 
       // Test the effectiveRole logic with null and undefined expiry dates
       const activeRepWithNullEnd: any = {

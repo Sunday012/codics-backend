@@ -16,9 +16,12 @@ import {
   ActivateDto,
   ActivateLookupDto,
   ForgotPasswordDto,
+  GoogleAuthDto,
+  LinkGoogleDto,
   LoginDto,
   RefreshDto,
   ResetPasswordDto,
+  UnlinkGoogleDto,
 } from './auth.dto';
 import { AuthService } from './auth.service';
 import { SafeUser } from '../common/user.util';
@@ -92,6 +95,37 @@ export class AuthController {
   @Post('reset')
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.auth.resetPassword(dto);
+  }
+
+  @Public()
+  @Throttle({ login: { ttl: 60000, limit: 10 } })
+  @Post('google')
+  async googleAuth(
+    @Body() dto: GoogleAuthDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.auth.googleAuth(dto, req, res);
+  }
+
+  @Public()
+  @Throttle({ login: { ttl: 60000, limit: 5 } })
+  @Post('google/link')
+  async linkGoogle(
+    @Body() dto: LinkGoogleDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.auth.linkGoogleAccount(dto, req, res);
+  }
+
+  @ApiBearerAuth()
+  @Post('google/unlink')
+  async unlinkGoogle(
+    @CurrentUser() user: { id: string },
+    @Body() dto: UnlinkGoogleDto,
+  ) {
+    return this.auth.unlinkGoogleAccount(user, dto);
   }
 
   @ApiBearerAuth()
