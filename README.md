@@ -154,3 +154,32 @@ npm run build
 - `main`: Production release branch.
 - `chore/prisma-setup`: Initial Prisma 7 configuration and verification.
 - `feature/backend-hardening-postgres`: Implementation branch for Phase A (hardening) and Phase B (PostgreSQL migration and domain porting).
+
+---
+
+## 8. Deploy to Render
+
+Create a Node web service from this repository using these settings:
+
+| Setting | Value |
+| :--- | :--- |
+| Branch | `main` |
+| Root directory | leave blank |
+| Build command | `npm ci && npm run build` |
+| Start command | `npm run start:render` |
+| Health check | `/api/v1/health` |
+
+`start:render` applies committed Prisma migrations before starting the API. Set
+`DATABASE_URL` and `DIRECT_URL` to the PostgreSQL connection URL, a secure
+`JWT_SECRET`, and `CORS_ORIGIN` to the deployed frontend origin.
+
+The production configuration requires S3-compatible file storage. Configure
+`STORAGE_DRIVER=s3`, `STORAGE_ENDPOINT`, `STORAGE_BUCKET`,
+`STORAGE_ACCESS_KEY_ID`, and `STORAGE_SECRET_ACCESS_KEY`. Free Render services
+have an ephemeral filesystem, so local disk storage must not be used for
+submission or past-question files.
+
+Email defaults to `console` in the Render Blueprint so the first deployment can
+start without a transactional-email account. Before inviting real users, switch
+`EMAIL_PROVIDER` to `resend`, `postmark`, or `sendgrid` and set the provider key
+and verified sender address.

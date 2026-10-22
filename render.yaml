@@ -2,16 +2,16 @@ services:
   - type: web
     name: codics-backend
     runtime: node
-    plan: starter
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:render
     healthCheckPath: /api/v1/health
     autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 3000
+      - key: NODE_VERSION
+        value: 22.20.0
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
@@ -20,6 +20,8 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false # Set to your Vercel deployment URL (e.g. https://your-project.vercel.app)
+      - key: FRONTEND_URL
+        sync: false # Usually the same URL as CORS_ORIGIN
       - key: DB_POOL_MAX
         value: 10
       - key: STORAGE_DRIVER
@@ -35,16 +37,6 @@ services:
       - key: STORAGE_SECRET_ACCESS_KEY
         sync: false
       - key: EMAIL_PROVIDER
-        value: resend
-      - key: EMAIL_API_KEY
-        sync: false
-      - key: EMAIL_FROM_ADDRESS
-        sync: false
+        value: console
       - key: WEB_PUSH_ENABLED
         value: "false"
-      - key: VAPID_PUBLIC_KEY
-        sync: false
-      - key: VAPID_PRIVATE_KEY
-        sync: false
-      - key: VAPID_SUBJECT
-        sync: false
