@@ -602,9 +602,55 @@ export class AdminService {
       });
 
       if (role.user.role === role.role) {
+        // Query remaining active and valid role assignments for this user
+        const remainingAssignments = await tx.roleAssignment.findMany({
+          where: {
+            userId: role.userId,
+            isActive: true,
+            id: { not: id },
+            validTo: { gt: now },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        // Determine effective role following hierarchy: admin > hod > lecturer > course_rep > user.baseRole
+        const activeRoles = remainingAssignments.map((a) => a.role);
+        let baseRole: Role = (role.user as any).baseRole;
+        // Follow-up Check 1: Existing users' baseRole values must preserve their actual underlying roles.
+        // If baseRole is student (default) or absent, but the user is actually a staff member (has staffId or role is lecturer/hod/admin),
+        // safely preserve their actual staff role and prevent unintended demotion to student.
+        if (!baseRole || baseRole === Role.student) {
+          if (role.user.staffId || role.user.role === Role.lecturer || role.user.role === Role.hod) {
+            baseRole = Role.lecturer;
+          } else if (role.user.role === Role.admin) {
+            baseRole = Role.admin;
+          } else {
+            baseRole = Role.student;
+          }
+        }
+        let nextRole: Role = baseRole;
+
+        if (activeRoles.includes(Role.admin)) {
+          nextRole = Role.admin;
+        } else if (activeRoles.includes(Role.hod)) {
+          nextRole = Role.hod;
+        } else if (activeRoles.includes(Role.lecturer)) {
+          nextRole = Role.lecturer;
+        } else if (activeRoles.includes(Role.course_rep)) {
+          nextRole = Role.course_rep;
+        }
+
+        const repTermUpdate =
+          nextRole === Role.course_rep
+            ? {}
+            : { repTermEnd: null, repTermStart: null };
+
         await tx.user.update({
           where: { id: role.userId },
-          data: { role: Role.student, repTermEnd: null, repTermStart: null },
+          data: {
+            role: nextRole,
+            ...repTermUpdate,
+          },
         });
       }
 

@@ -60,12 +60,41 @@ describe('AuthService - effectiveRole', () => {
     expect(service.effectiveRole(user)).toBe(Role.course_rep);
   });
 
+  it('should preserve active course_rep when rep term expiry is null or absent (Follow-up Check 2)', () => {
+    const userWithNullEnd = {
+      id: 'rep-null',
+      role: Role.course_rep,
+      repTermEnd: null,
+      baseRole: Role.student,
+    };
+    expect(service.effectiveRole(userWithNullEnd)).toBe(Role.course_rep);
+
+    const userWithAbsentEnd = {
+      id: 'rep-absent',
+      role: Role.course_rep,
+      baseRole: Role.student,
+    };
+    expect(service.effectiveRole(userWithAbsentEnd)).toBe(Role.course_rep);
+  });
+
   it('should return student when rep term has expired', () => {
     const pastDate = new Date(Date.now() - 1000 * 60 * 60 * 24);
     const user = {
       id: 'rep-2',
       role: Role.course_rep,
       repTermEnd: pastDate,
+    };
+
+    expect(service.effectiveRole(user)).toBe(Role.student);
+  });
+
+  it('should return baseRole when rep term has expired and baseRole is set', () => {
+    const pastDate = new Date(Date.now() - 1000 * 60 * 60 * 24);
+    const user = {
+      id: 'rep-3',
+      role: Role.course_rep,
+      repTermEnd: pastDate,
+      baseRole: Role.student,
     };
 
     expect(service.effectiveRole(user)).toBe(Role.student);

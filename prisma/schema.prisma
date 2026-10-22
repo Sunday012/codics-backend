@@ -53,6 +53,19 @@ enum AudienceScope {
   course
 }
 
+enum AuthProvider {
+  local
+  google
+  google_linked
+}
+
+enum StaffInvitationStatus {
+  pending
+  accepted
+  expired
+  revoked
+}
+
 enum AssignmentStatus {
   draft
   published
@@ -144,6 +157,7 @@ model Department {
   users   User[]
   courses Course[]
   onboardingApps OnboardingApplication[]
+  staffInvitations StaffInvitation[]
 }
 
 model Setting {
@@ -164,6 +178,11 @@ model User {
   departmentId   String?
   level          Int?
   status         UserStatus @default(invited)
+  googleId       String?    @unique
+  googleEmail    String?
+  authProvider   AuthProvider @default(local)
+  avatarUrl      String?
+  baseRole       Role       @default(student)
   repTermStart   DateTime?
   repTermEnd     DateTime?
   activatedAt    DateTime?
@@ -198,6 +217,8 @@ model User {
   reviewedOnboardingDocs     OnboardingDocument[]     @relation("ReviewedOnboardingDocuments")
   loggedOnboardingReviews    OnboardingReviewLog[]    @relation("LoggedOnboardingReviews")
   publishedRegGuides         RegistrationGuide[]      @relation("PublishedRegistrationGuides")
+  sentStaffInvitations       StaffInvitation[]        @relation("SentStaffInvitations")
+  acceptedStaffInvitation    StaffInvitation?         @relation("AcceptedStaffInvitation")
 
   @@index([departmentId])
   @@index([role])
@@ -866,4 +887,51 @@ model RegistrationGuide {
   @@index([session])
   @@index([targetDepartmentCode])
   @@index([isPublished])
+}
+
+model StaffInvitation {
+  id           String                @id @default(uuid())
+  email        String
+  fullName     String
+  role         Role
+  departmentId String
+  tokenHash    String                @unique
+  invitedById  String
+  status       StaffInvitationStatus @default(pending)
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  acceptedById String?               @unique
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  department   Department            @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  invitedBy    User                  @relation("SentStaffInvitations", fields: [invitedById], references: [id], onDelete: Restrict)
+  acceptedBy   User?                 @relation("AcceptedStaffInvitation", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([email])
+  @@index([tokenHash])
+  @@index([departmentId])
+  @@index([status])
+}
+
+model AdmissionsRoster {
+  id              String    @id @default(uuid())
+  jambRegNo       String    @unique
+  matricNo        String?   @unique
+  fullName        String
+  email           String?
+  departmentCode  String
+  level           Int       @default(100)
+  session         String
+  verificationKey String    // Salted/hashed secret for dual-factor roster verification
+  isClaimed       Boolean   @default(false)
+  claimedAt       DateTime?
+  claimedByUserId String?   @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([jambRegNo])
+  @@index([matricNo])
+  @@index([departmentCode])
+  @@index([isClaimed])
 }

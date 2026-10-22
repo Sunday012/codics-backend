@@ -440,6 +440,8 @@ export class AuthService {
     role: Role;
     repTermEnd?: Date | string | null;
     repTermEndDate?: string | Date | null;
+    baseRole?: Role;
+    staffId?: string | null;
   }): Role {
     const rawEnd = user.repTermEnd || user.repTermEndDate;
     const repEnd = rawEnd
@@ -447,8 +449,11 @@ export class AuthService {
         ? new Date(rawEnd)
         : rawEnd
       : null;
+    // Follow-up Check 2: Active assignments with nullable or absent expiry dates (repEnd === null)
+    // remain active and must NOT be considered expired.
+    // Expiration only takes effect if repEnd is explicitly set and in the past.
     if (user.role === Role.course_rep && repEnd && repEnd < new Date()) {
-      return Role.student;
+      return (user as any).baseRole || Role.student;
     }
     return user.role;
   }
