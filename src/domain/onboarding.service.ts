@@ -1081,7 +1081,7 @@ export class OnboardingService {
    * Public list of active departments for candidate onboarding.
    */
   async getDepartments() {
-    return this.prisma.department.findMany({
+    let list = await this.prisma.department.findMany({
       orderBy: { name: 'asc' },
       select: {
         id: true,
@@ -1089,6 +1089,32 @@ export class OnboardingService {
         name: true,
       },
     });
+
+    if (!list || list.length === 0) {
+      const defaultDepts = [
+        { id: 'dept-csc', code: 'CSC', name: 'Computer Science' },
+        { id: 'dept-sen', code: 'SEN', name: 'Software Engineering' },
+        { id: 'dept-cyb', code: 'CYB', name: 'Cyber Security' },
+        { id: 'dept-it', code: 'IFT', name: 'Information Technology' },
+      ];
+      for (const d of defaultDepts) {
+        await this.prisma.department.upsert({
+          where: { code: d.code },
+          update: { name: d.name },
+          create: d,
+        });
+      }
+      list = await this.prisma.department.findMany({
+        orderBy: { name: 'asc' },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+        },
+      });
+    }
+
+    return list;
   }
 
   /**
@@ -1359,15 +1385,34 @@ export class OnboardingService {
     const deptNorm = dto.departmentCode.trim().toUpperCase();
     const fullName = `${dto.firstName.trim()} ${dto.middleName?.trim() ? dto.middleName.trim() + ' ' : ''}${dto.surname.trim()}`;
 
-    // Validate department existence
-    const department = await this.prisma.department.findFirst({
+    // Validate department existence (with auto-heal for standard faculty departments)
+    let department = await this.prisma.department.findFirst({
       where: {
         OR: [{ code: deptNorm }, { name: { equals: deptNorm, mode: 'insensitive' } }],
       },
     });
 
     if (!department) {
-      throw new BadRequestException(`Department "${dto.departmentCode}" not found`);
+      const KNOWN_FACULTY_DEPTS: Record<string, { id: string; name: string }> = {
+        CSC: { id: 'dept-csc', name: 'Computer Science' },
+        SEN: { id: 'dept-sen', name: 'Software Engineering' },
+        CYB: { id: 'dept-cyb', name: 'Cyber Security' },
+        IFT: { id: 'dept-it', name: 'Information Technology' },
+      };
+
+      if (KNOWN_FACULTY_DEPTS[deptNorm]) {
+        department = await this.prisma.department.upsert({
+          where: { code: deptNorm },
+          update: { name: KNOWN_FACULTY_DEPTS[deptNorm].name },
+          create: {
+            id: KNOWN_FACULTY_DEPTS[deptNorm].id,
+            code: deptNorm,
+            name: KNOWN_FACULTY_DEPTS[deptNorm].name,
+          },
+        });
+      } else {
+        throw new BadRequestException(`Department "${dto.departmentCode}" not found`);
+      }
     }
 
     // Step 1: Check if an existing User already has this matricNo or jamb
@@ -1415,15 +1460,20 @@ export class OnboardingService {
     }
 
     // Step 2: Try to match AdmissionsRoster by jambRegNo or matricNo
-    let rosterRecord = null;
-    if (jambNorm) {
-      rosterRecord = await this.prisma.admissionsRoster.findUnique({
-        where: { jambRegNo: jambNorm },
-      });
-    } else if (matricNorm) {
-      rosterRecord = await this.prisma.admissionsRoster.findUnique({
-        where: { matricNo: matricNorm },
-      });
+    let rosterRecord: any = null;
+    try {
+      if (jambNorm) {
+        rosterRecord = await this.prisma.admissionsRoster.findUnique({
+          where: { jambRegNo: jambNorm },
+        });
+      } else if (matricNorm) {
+        rosterRecord = await this.prisma.admissionsRoster.findUnique({
+          where: { matricNo: matricNorm },
+        });
+      }
+    } catch (rosterErr: any) {
+      this.logger.warn(`Admissions roster lookup query failed: ${rosterErr?.message}`);
+      rosterRecord = null;
     }
 
     // MATCH EVALUATION
