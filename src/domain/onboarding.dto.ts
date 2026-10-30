@@ -58,9 +58,13 @@ export class ApplyOnboardingDto {
 }
 
 export class TrackOnboardingDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  jambRegNo!: string;
+  jambRegNo?: string;
+
+  @IsOptional()
+  @IsString()
+  identifier?: string;
 
   @IsString()
   @IsNotEmpty()

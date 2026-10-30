@@ -108,11 +108,6 @@ export class OnboardingService {
       throw new NotFoundException('Application not found');
     }
 
-    // Direct token match (raw access token or decoded JWT sub)
-    if (rawTokenOrCandidateId === app.id) {
-      return app;
-    }
-
     const hashedInput = this.hashToken(rawTokenOrCandidateId);
     if (hashedInput === app.accessKeyHash) {
       return app;
@@ -260,13 +255,25 @@ export class OnboardingService {
    * 2. Candidate Application Tracking
    */
   async trackApplication(dto: TrackOnboardingDto) {
-    const normalizedJamb = dto.jambRegNo.trim().toUpperCase();
+    const rawIdentifier = (dto.identifier || dto.jambRegNo || '').trim();
+    if (!rawIdentifier) {
+      throw new BadRequestException(
+        'A matching student identifier (JAMB Reg No, Matric No, or Registration Email) is required to track your application.',
+      );
+    }
+    const normalizedIdentifier = rawIdentifier.toUpperCase();
+    const normalizedEmail = rawIdentifier.toLowerCase();
     const normalizedAppNum = dto.applicationNumber.trim().toUpperCase();
 
     const application = await this.prisma.onboardingApplication.findFirst({
       where: {
-        jambRegNo: normalizedJamb,
         applicationNumber: normalizedAppNum,
+        OR: [
+          { jambRegNo: normalizedIdentifier },
+          { email: normalizedEmail },
+          { phone: rawIdentifier },
+          { convertedMatricNo: normalizedIdentifier },
+        ],
       },
       include: {
         department: true,
@@ -299,11 +306,11 @@ export class OnboardingService {
 
     if (!application) {
       throw new NotFoundException(
-        'No matching application found. Please check your JAMB Registration Number and Application Number.',
+        'No matching application record found. Please verify your Application Reference Number and Student Identifier.',
       );
     }
 
-    const candidateToken = this.generateCandidateToken(application.id, normalizedJamb);
+    const candidateToken = this.generateCandidateToken(application.id, application.jambRegNo);
 
     return {
       application: {
@@ -1037,7 +1044,7 @@ export class OnboardingService {
    * 10. Secure Document Streaming & Authorization Check
    */
   async streamDocument(
-    caller: { id?: string; role?: string; applicationId?: string } | null,
+    caller: { id?: string; role?: string; applicationId?: string; token?: string } | null,
     documentId: string,
   ) {
     const doc = await this.prisma.onboardingDocument.findUnique({
@@ -1056,10 +1063,20 @@ export class OnboardingService {
     // Role-based / ownership authorization check:
     // Authorized if:
     // 1) Caller is staff (admin or hod)
-    // 2) Caller is the candidate owner (matching candidate applicationId or id)
+    // 2) Caller is the candidate owner (matching candidate applicationId or valid candidate token)
     const isStaff = caller?.role === Role.admin || caller?.role === Role.hod;
-    const isOwner =
-      caller?.applicationId === doc.applicationId || caller?.id === doc.applicationId;
+    let isOwner = false;
+
+    if (caller?.applicationId && (caller.applicationId === doc.applicationId || caller.id === doc.applicationId)) {
+      isOwner = true;
+    } else if (caller?.token) {
+      try {
+        await this.validateCandidateAccess(doc.applicationId, caller.token);
+        isOwner = true;
+      } catch {
+        isOwner = false;
+      }
+    }
 
     if (!isStaff && !isOwner) {
       throw new ForbiddenException(
@@ -1496,6 +1513,33 @@ export class OnboardingService {
         };
       }
 
+      // Name Discrepancy Detection: verify that submitted surname or first name matches roster record
+      if (rosterRecord.fullName) {
+        const rosterTokens = rosterRecord.fullName
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter(Boolean);
+        const subFirst = dto.firstName.trim().toLowerCase();
+        const subSurname = dto.surname.trim().toLowerCase();
+
+        const hasSurnameMatch = rosterTokens.includes(subSurname);
+        const hasFirstMatch = rosterTokens.includes(subFirst);
+
+        if (!hasSurnameMatch && !hasFirstMatch) {
+          return {
+            status: 'EXCEPTION_NAME_MISMATCH',
+            message: 'The submitted name does not match the official admissions roster record. Routed to faculty exception review.',
+            applicationNumber: await this.createOrRouteException(
+              dto,
+              department.id,
+              fullName,
+              'NAME_MISMATCH_WITH_ROSTER',
+            ),
+          };
+        }
+      }
+
       // Dual-factor verification check if verificationKey exists
       if (rosterRecord.verificationKey && rosterRecord.verificationKey !== this.hashToken('default')) {
         if (!dto.verificationSecret || this.hashToken(dto.verificationSecret) !== rosterRecord.verificationKey) {
@@ -1580,7 +1624,9 @@ export class OnboardingService {
     fullName: string,
     reason: string,
   ): Promise<string> {
-    const jambRegNo = (dto.jambRegNo || `APP/${randomBytes(4).toString('hex').toUpperCase()}`).toUpperCase();
+    const matricNorm = dto.matricNo?.trim().toUpperCase();
+    const jambNorm = dto.jambRegNo?.trim().toUpperCase();
+    const jambRegNo = (jambNorm || matricNorm || `APP/${randomBytes(4).toString('hex').toUpperCase()}`).toUpperCase();
     const currentSetting = await this.prisma.setting.findFirst({ orderBy: { updatedAt: 'desc' } });
     const session = currentSetting?.session || '2026/2027';
 
