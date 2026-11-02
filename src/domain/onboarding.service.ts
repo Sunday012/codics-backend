@@ -1775,15 +1775,15 @@ export class OnboardingService {
               baseRole: Role.student,
               departmentId: app.departmentId,
               level: dto.assignedLevel || app.entryLevel || 100,
-              status: UserStatus.active,
-              activatedAt: new Date(),
+              status: UserStatus.invited,
+              activatedAt: null,
             },
           });
         } else {
           studentUser = await tx.user.update({
             where: { id: studentUser.id },
             data: {
-              status: UserStatus.active,
+              status: studentUser.passwordHash ? UserStatus.active : UserStatus.invited,
               matricNo: assignedMatric || studentUser.matricNo,
               level: dto.assignedLevel || studentUser.level,
             },
