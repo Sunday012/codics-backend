@@ -156,9 +156,16 @@ export class ManagedHttpEmailAdapter implements EmailProviderAdapter {
     }
 
     if (!response.ok) {
+      let errDetail = '';
+      try {
+        errDetail = await response.text();
+      } catch {
+        // Ignore
+      }
+      this.logger.error(`[${this.name}] Email delivery failed HTTP ${response.status}: ${errDetail}`);
       const retryable = response.status === 429 || response.status >= 500;
       throw new ProviderDeliveryError(
-        `Email provider HTTP ${response.status}`,
+        `Email provider HTTP ${response.status}: ${errDetail}`,
         response.status,
         retryable,
       );
@@ -231,8 +238,10 @@ export class MailService implements IMailService {
     )
       .trim()
       .toLowerCase();
+    const defaultFrom =
+      provider === 'resend' ? 'onboarding@resend.dev' : 'no-reply@foc.edu.ng';
     const fromAddress =
-      this.config?.get<string>('EMAIL_FROM_ADDRESS') || 'no-reply@foc.edu.ng';
+      this.config?.get<string>('EMAIL_FROM_ADDRESS') || defaultFrom;
     const fromName =
       this.config?.get<string>('EMAIL_FROM_NAME') ||
       'CODICS — Faculty of Computing';
