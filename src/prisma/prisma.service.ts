@@ -30,6 +30,41 @@ export class PrismaService
   async onModuleInit() {
     await this.$connect();
     this.logger.log('PrismaService connected to PostgreSQL successfully.');
+    await this.ensureFoundationalData();
+  }
+
+  /**
+   * Self-healing data initialization:
+   * Guarantees that foundational faculty departments (CSC, SEN, CYB, IFT)
+   * and initial academic setting exist in any deployment environment.
+   */
+  private async ensureFoundationalData() {
+    try {
+      const defaultDepts = [
+        { id: 'dept-csc', code: 'CSC', name: 'Computer Science' },
+        { id: 'dept-sen', code: 'SEN', name: 'Software Engineering' },
+        { id: 'dept-cyb', code: 'CYB', name: 'Cyber Security' },
+        { id: 'dept-it', code: 'IFT', name: 'Information Technology' },
+      ];
+
+      for (const d of defaultDepts) {
+        await this.department.upsert({
+          where: { code: d.code },
+          update: { name: d.name },
+          create: d,
+        });
+      }
+
+      const existingSetting = await this.setting.findFirst();
+      if (!existingSetting) {
+        await this.setting.create({
+          data: { session: '2026/2027', semester: 'first' as any },
+        });
+      }
+      this.logger.log('Foundational departments and settings verified.');
+    } catch (err: any) {
+      this.logger.warn(`Could not verify foundational departments: ${err?.message}`);
+    }
   }
 
   async onModuleDestroy() {

@@ -108,11 +108,6 @@ export class OnboardingService {
       throw new NotFoundException('Application not found');
     }
 
-    // Direct token match (raw access token or decoded JWT sub)
-    if (rawTokenOrCandidateId === app.id) {
-      return app;
-    }
-
     const hashedInput = this.hashToken(rawTokenOrCandidateId);
     if (hashedInput === app.accessKeyHash) {
       return app;
@@ -260,13 +255,25 @@ export class OnboardingService {
    * 2. Candidate Application Tracking
    */
   async trackApplication(dto: TrackOnboardingDto) {
-    const normalizedJamb = dto.jambRegNo.trim().toUpperCase();
+    const rawIdentifier = (dto.identifier || dto.jambRegNo || '').trim();
+    if (!rawIdentifier) {
+      throw new BadRequestException(
+        'A matching student identifier (JAMB Reg No, Matric No, or Registration Email) is required to track your application.',
+      );
+    }
+    const normalizedIdentifier = rawIdentifier.toUpperCase();
+    const normalizedEmail = rawIdentifier.toLowerCase();
     const normalizedAppNum = dto.applicationNumber.trim().toUpperCase();
 
     const application = await this.prisma.onboardingApplication.findFirst({
       where: {
-        jambRegNo: normalizedJamb,
         applicationNumber: normalizedAppNum,
+        OR: [
+          { jambRegNo: normalizedIdentifier },
+          { email: normalizedEmail },
+          { phone: rawIdentifier },
+          { convertedMatricNo: normalizedIdentifier },
+        ],
       },
       include: {
         department: true,
@@ -299,11 +306,11 @@ export class OnboardingService {
 
     if (!application) {
       throw new NotFoundException(
-        'No matching application found. Please check your JAMB Registration Number and Application Number.',
+        'No matching application record found. Please verify your Application Reference Number and Student Identifier.',
       );
     }
 
-    const candidateToken = this.generateCandidateToken(application.id, normalizedJamb);
+    const candidateToken = this.generateCandidateToken(application.id, application.jambRegNo);
 
     return {
       application: {
@@ -1037,7 +1044,7 @@ export class OnboardingService {
    * 10. Secure Document Streaming & Authorization Check
    */
   async streamDocument(
-    caller: { id?: string; role?: string; applicationId?: string } | null,
+    caller: { id?: string; role?: string; applicationId?: string; token?: string } | null,
     documentId: string,
   ) {
     const doc = await this.prisma.onboardingDocument.findUnique({
@@ -1056,10 +1063,20 @@ export class OnboardingService {
     // Role-based / ownership authorization check:
     // Authorized if:
     // 1) Caller is staff (admin or hod)
-    // 2) Caller is the candidate owner (matching candidate applicationId or id)
+    // 2) Caller is the candidate owner (matching candidate applicationId or valid candidate token)
     const isStaff = caller?.role === Role.admin || caller?.role === Role.hod;
-    const isOwner =
-      caller?.applicationId === doc.applicationId || caller?.id === doc.applicationId;
+    let isOwner = false;
+
+    if (caller?.applicationId && (caller.applicationId === doc.applicationId || caller.id === doc.applicationId)) {
+      isOwner = true;
+    } else if (caller?.token) {
+      try {
+        await this.validateCandidateAccess(doc.applicationId, caller.token);
+        isOwner = true;
+      } catch {
+        isOwner = false;
+      }
+    }
 
     if (!isStaff && !isOwner) {
       throw new ForbiddenException(
@@ -1081,7 +1098,7 @@ export class OnboardingService {
    * Public list of active departments for candidate onboarding.
    */
   async getDepartments() {
-    return this.prisma.department.findMany({
+    let list = await this.prisma.department.findMany({
       orderBy: { name: 'asc' },
       select: {
         id: true,
@@ -1089,6 +1106,32 @@ export class OnboardingService {
         name: true,
       },
     });
+
+    if (!list || list.length === 0) {
+      const defaultDepts = [
+        { id: 'dept-csc', code: 'CSC', name: 'Computer Science' },
+        { id: 'dept-sen', code: 'SEN', name: 'Software Engineering' },
+        { id: 'dept-cyb', code: 'CYB', name: 'Cyber Security' },
+        { id: 'dept-it', code: 'IFT', name: 'Information Technology' },
+      ];
+      for (const d of defaultDepts) {
+        await this.prisma.department.upsert({
+          where: { code: d.code },
+          update: { name: d.name },
+          create: d,
+        });
+      }
+      list = await this.prisma.department.findMany({
+        orderBy: { name: 'asc' },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+        },
+      });
+    }
+
+    return list;
   }
 
   /**
@@ -1359,15 +1402,34 @@ export class OnboardingService {
     const deptNorm = dto.departmentCode.trim().toUpperCase();
     const fullName = `${dto.firstName.trim()} ${dto.middleName?.trim() ? dto.middleName.trim() + ' ' : ''}${dto.surname.trim()}`;
 
-    // Validate department existence
-    const department = await this.prisma.department.findFirst({
+    // Validate department existence (with auto-heal for standard faculty departments)
+    let department = await this.prisma.department.findFirst({
       where: {
         OR: [{ code: deptNorm }, { name: { equals: deptNorm, mode: 'insensitive' } }],
       },
     });
 
     if (!department) {
-      throw new BadRequestException(`Department "${dto.departmentCode}" not found`);
+      const KNOWN_FACULTY_DEPTS: Record<string, { id: string; name: string }> = {
+        CSC: { id: 'dept-csc', name: 'Computer Science' },
+        SEN: { id: 'dept-sen', name: 'Software Engineering' },
+        CYB: { id: 'dept-cyb', name: 'Cyber Security' },
+        IFT: { id: 'dept-it', name: 'Information Technology' },
+      };
+
+      if (KNOWN_FACULTY_DEPTS[deptNorm]) {
+        department = await this.prisma.department.upsert({
+          where: { code: deptNorm },
+          update: { name: KNOWN_FACULTY_DEPTS[deptNorm].name },
+          create: {
+            id: KNOWN_FACULTY_DEPTS[deptNorm].id,
+            code: deptNorm,
+            name: KNOWN_FACULTY_DEPTS[deptNorm].name,
+          },
+        });
+      } else {
+        throw new BadRequestException(`Department "${dto.departmentCode}" not found`);
+      }
     }
 
     // Step 1: Check if an existing User already has this matricNo or jamb
@@ -1415,15 +1477,20 @@ export class OnboardingService {
     }
 
     // Step 2: Try to match AdmissionsRoster by jambRegNo or matricNo
-    let rosterRecord = null;
-    if (jambNorm) {
-      rosterRecord = await this.prisma.admissionsRoster.findUnique({
-        where: { jambRegNo: jambNorm },
-      });
-    } else if (matricNorm) {
-      rosterRecord = await this.prisma.admissionsRoster.findUnique({
-        where: { matricNo: matricNorm },
-      });
+    let rosterRecord: any = null;
+    try {
+      if (jambNorm) {
+        rosterRecord = await this.prisma.admissionsRoster.findUnique({
+          where: { jambRegNo: jambNorm },
+        });
+      } else if (matricNorm) {
+        rosterRecord = await this.prisma.admissionsRoster.findUnique({
+          where: { matricNo: matricNorm },
+        });
+      }
+    } catch (rosterErr: any) {
+      this.logger.warn(`Admissions roster lookup query failed: ${rosterErr?.message}`);
+      rosterRecord = null;
     }
 
     // MATCH EVALUATION
@@ -1444,6 +1511,33 @@ export class OnboardingService {
           message: `The submitted department (${department.code}) does not match the admitted department (${rosterRecord.departmentCode}). Routed to faculty exception review.`,
           applicationNumber: await this.createOrRouteException(dto, department.id, fullName, 'DEPARTMENT_MISMATCH'),
         };
+      }
+
+      // Name Discrepancy Detection: verify that submitted surname or first name matches roster record
+      if (rosterRecord.fullName) {
+        const rosterTokens = rosterRecord.fullName
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter(Boolean);
+        const subFirst = dto.firstName.trim().toLowerCase();
+        const subSurname = dto.surname.trim().toLowerCase();
+
+        const hasSurnameMatch = rosterTokens.includes(subSurname);
+        const hasFirstMatch = rosterTokens.includes(subFirst);
+
+        if (!hasSurnameMatch && !hasFirstMatch) {
+          return {
+            status: 'EXCEPTION_NAME_MISMATCH',
+            message: 'The submitted name does not match the official admissions roster record. Routed to faculty exception review.',
+            applicationNumber: await this.createOrRouteException(
+              dto,
+              department.id,
+              fullName,
+              'NAME_MISMATCH_WITH_ROSTER',
+            ),
+          };
+        }
       }
 
       // Dual-factor verification check if verificationKey exists
@@ -1530,7 +1624,9 @@ export class OnboardingService {
     fullName: string,
     reason: string,
   ): Promise<string> {
-    const jambRegNo = (dto.jambRegNo || `APP/${randomBytes(4).toString('hex').toUpperCase()}`).toUpperCase();
+    const matricNorm = dto.matricNo?.trim().toUpperCase();
+    const jambNorm = dto.jambRegNo?.trim().toUpperCase();
+    const jambRegNo = (jambNorm || matricNorm || `APP/${randomBytes(4).toString('hex').toUpperCase()}`).toUpperCase();
     const currentSetting = await this.prisma.setting.findFirst({ orderBy: { updatedAt: 'desc' } });
     const session = currentSetting?.session || '2026/2027';
 
@@ -1679,15 +1775,15 @@ export class OnboardingService {
               baseRole: Role.student,
               departmentId: app.departmentId,
               level: dto.assignedLevel || app.entryLevel || 100,
-              status: UserStatus.active,
-              activatedAt: new Date(),
+              status: UserStatus.invited,
+              activatedAt: null,
             },
           });
         } else {
           studentUser = await tx.user.update({
             where: { id: studentUser.id },
             data: {
-              status: UserStatus.active,
+              status: studentUser.passwordHash ? UserStatus.active : UserStatus.invited,
               matricNo: assignedMatric || studentUser.matricNo,
               level: dto.assignedLevel || studentUser.level,
             },

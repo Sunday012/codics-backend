@@ -13,7 +13,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import { PrismaService } from '../prisma/prisma.service';
-import { MailService } from '../common/mail.service';
+import { MailService, maskEmailAddress } from '../common/mail.service';
 import { AuditService } from '../common/audit.service';
 import { SafeUser, toSafeUser } from '../common/user.util';
 import { User, Role, UserStatus, AuthProvider } from '@prisma/client';
@@ -193,11 +193,12 @@ export class AuthService {
       );
 
     // Timing-attack mitigation: run a dummy bcrypt hash if user does not qualify
-    if (!user || (user.status === UserStatus.active && !isDevRosterAccount)) {
+    const isAlreadyActive = user?.status === UserStatus.active && !!user.passwordHash;
+    if (!user || (isAlreadyActive && !isDevRosterAccount)) {
       await hash('dummy-activation-code-for-timing', 10);
       if (!this.isProduction) {
         console.log(
-          `[AUTH DEV] Activation lookup for ${normalized}: ${!user ? 'student not found on roster' : 'account already active'}`,
+          `[AUTH DEV] Activation lookup for ${normalized}: ${!user ? 'student not found on roster' : 'account already active with password'}`,
         );
       }
       return {
@@ -229,6 +230,14 @@ export class AuthService {
     return {
       success: true,
       message: 'If the student is on the approved roster, an activation code has been sent',
+      student: {
+        matricNo: user.matricNo,
+        fullName: user.fullName,
+        department: user.department?.name || 'Faculty of Computing',
+        level: String(user.level || 100),
+        email: targetEmail,
+        maskedEmail: maskEmailAddress(targetEmail),
+      },
     };
   }
 
@@ -247,7 +256,8 @@ export class AuthService {
         normalizedMatric,
       );
 
-    if (!user || (user.status === UserStatus.active && !isDevRosterAccount)) {
+    const isAlreadyActive = user?.status === UserStatus.active && !!user.passwordHash;
+    if (!user || (isAlreadyActive && !isDevRosterAccount)) {
       await hash('dummy-for-timing', 10);
       throw new BadRequestException('Invalid or expired activation details');
     }

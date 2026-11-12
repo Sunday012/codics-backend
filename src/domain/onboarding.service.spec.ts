@@ -520,6 +520,48 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
       const file = await service.streamDocument(mockAdminUser, 'doc-1');
       expect(file.fileName).toBe('waec.pdf');
     });
+
+    it('rejects candidate attempting to download document belonging to another application using candidate token', async () => {
+      mockPrisma.onboardingDocument.findUnique.mockResolvedValueOnce({
+        id: 'doc-confidential',
+        applicationId: 'app-victim',
+        fileName: 'confidential.pdf',
+        fileKey: 'onboarding-docs/app-victim/confidential.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+      });
+
+      mockPrisma.onboardingApplication.findUnique.mockResolvedValueOnce({
+        id: 'app-victim',
+        accessKeyHash: 'some-hash',
+      });
+
+      // Attacker token is for app-attacker, not app-victim
+      mockJwt.verify.mockReturnValueOnce({
+        sub: 'app-attacker',
+        type: 'onboarding_candidate',
+      });
+
+      await expect(
+        service.streamDocument({ token: 'attacker-candidate-jwt' }, 'doc-confidential'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects candidate access when raw application ID is sent instead of valid cryptographic secret', async () => {
+      mockPrisma.onboardingApplication.findUnique.mockResolvedValueOnce({
+        id: 'app-target',
+        accessKeyHash: (service as any).hashToken('correct-raw-token'),
+      });
+
+      // Attacker sends the application ID as the token
+      mockJwt.verify.mockImplementationOnce(() => {
+        throw new Error('invalid jwt');
+      });
+
+      await expect(
+        service.validateCandidateAccess('app-target', 'app-target'),
+      ).rejects.toThrow(ForbiddenException);
+    });
   });
 
   describe('7. Verified Registration Guide (No Fake Payment Processing)', () => {
@@ -674,6 +716,172 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
         expect(res.message).toContain('already been claimed by another account');
       });
 
+      it('matches student with valid secondary verification secret and activates account', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-secret-1',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+          verificationKey: (service as any).hashToken('1999-10-15'),
+          isClaimed: false,
+        });
+
+        mockPrisma.$transaction.mockImplementationOnce(async (callback: any) => {
+          return callback({
+            admissionsRoster: {
+              updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+              update: jest.fn().mockResolvedValue({}),
+            },
+            user: {
+              create: jest.fn().mockResolvedValue({
+                id: 'usr-student-secret-1',
+                fullName: 'Verified Student',
+                email: 'verified@student.foc.edu.ng',
+                status: UserStatus.active,
+                role: Role.student,
+                department: mockDepartmentCs,
+              }),
+            },
+          });
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Verified',
+          surname: 'Student',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+          verificationSecret: '1999-10-15',
+        });
+
+        expect(res.status).toBe('SUCCESS_ONBOARDED');
+        expect((res as any).tokens).toBeDefined();
+      });
+
+      it('routes to exception review when secondary verification secret is incorrect', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-secret-2',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+          verificationKey: (service as any).hashToken('1999-10-15'),
+          isClaimed: false,
+        });
+
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+        mockPrisma.onboardingApplication.create.mockResolvedValueOnce({
+          applicationNumber: 'FOC-2026-SECMIS1',
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Verified',
+          surname: 'Student',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+          verificationSecret: 'wrong-secret',
+        });
+
+        expect(res.status).toBe('EXCEPTION_VERIFICATION_MISMATCH');
+        expect(res.message).toContain('Secondary verification secret did not match');
+        expect((res as any).tokens).toBeUndefined();
+      });
+
+      it('routes to exception review when secondary verification secret is omitted but roster requires it', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-secret-3',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+          verificationKey: (service as any).hashToken('PIN-1234'),
+          isClaimed: false,
+        });
+
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+        mockPrisma.onboardingApplication.create.mockResolvedValueOnce({
+          applicationNumber: 'FOC-2026-SECMIS2',
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Verified',
+          surname: 'Student',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+          // verificationSecret intentionally omitted
+        });
+
+        expect(res.status).toBe('EXCEPTION_VERIFICATION_MISMATCH');
+        expect((res as any).tokens).toBeUndefined();
+      });
+
+      it('routes to exception review when department does not match admissions roster record', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-dept-mis',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'SEN',
+          verificationKey: (service as any).hashToken('default'),
+          isClaimed: false,
+        });
+
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+        mockPrisma.onboardingApplication.create.mockResolvedValueOnce({
+          applicationNumber: 'FOC-2026-DEPTMIS1',
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Department',
+          surname: 'Mismatch',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+        });
+
+        expect(res.status).toBe('EXCEPTION_DEPARTMENT_MISMATCH');
+        expect(res.message).toContain('does not match the admitted department');
+        expect((res as any).tokens).toBeUndefined();
+      });
+
+      it('detects existing active account conflict when matriculation number already belongs to active user', async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+          id: 'usr-active-existing',
+          matricNo: 'CSC/2021/001',
+          status: UserStatus.active,
+          role: Role.student,
+        });
+
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Existing',
+          surname: 'Student',
+          matricNo: 'CSC/2021/001',
+          departmentCode: 'CSC',
+        });
+
+        expect(res.status).toBe('CONFLICT_EXISTING_ACCOUNT');
+        expect(res.message).toContain('active account already exists');
+      });
+
+      it('routes to exception review when submitted candidate name does not match admissions roster record', async () => {
+        mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce({
+          id: 'adm-rec-name-mis',
+          jambRegNo: '202611112222SS',
+          fullName: 'Chukwuma David Okafor',
+          departmentCode: 'CSC',
+          verificationKey: (service as any).hashToken('default'),
+          isClaimed: false,
+        });
+
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+        mockPrisma.onboardingApplication.create.mockResolvedValueOnce({
+          applicationNumber: 'FOC-2026-NAMEMIS1',
+        });
+
+        // Imposter submits completely different names
+        const res = await service.submitStudentOnboarding({
+          firstName: 'Imposter',
+          surname: 'Intruder',
+          jambRegNo: '202611112222SS',
+          departmentCode: 'CSC',
+        });
+
+        expect(res.status).toBe('EXCEPTION_NAME_MISMATCH');
+        expect(res.message).toContain('does not match the official admissions roster record');
+        expect((res as any).tokens).toBeUndefined();
+      });
+
       it('routes unmatched student to exception queue without granting academic access', async () => {
         mockPrisma.admissionsRoster.findUnique.mockResolvedValueOnce(null); // Not on roster
         mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
@@ -736,6 +944,160 @@ describe('OnboardingService (Phase 9 — Guided New-Student Onboarding)', () => 
         await expect(
           service.resolveExceptionCase(mockHodOther, 'app-excp-cs', { action: 'APPROVE' }),
         ).rejects.toThrow(ForbiddenException);
+      });
+    });
+
+    describe('Application Tracking (Multi-Identifier & Access Security)', () => {
+      it('successfully tracks an application using applicationNumber and email identifier', async () => {
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce({
+          id: 'app-1',
+          applicationNumber: 'FOC-2026-F2A982',
+          jambRegNo: 'APP/4D5B440E',
+          fullName: 'Mene Gideon',
+          email: 'menegideon84@gmail.com',
+          phone: '09063979730',
+          entryLevel: 100,
+          session: '2026/2027',
+          status: OnboardingStatus.under_review,
+          department: mockDepartmentCs,
+          documents: [],
+          reviewLogs: [],
+        });
+
+        const res = await service.trackApplication({
+          applicationNumber: 'FOC-2026-F2A982',
+          identifier: 'menegideon84@gmail.com',
+        });
+
+        expect(res.application).toBeDefined();
+        expect(res.application.applicationNumber).toBe('FOC-2026-F2A982');
+        expect(res.candidateToken).toBe('mock-candidate-jwt');
+      });
+
+      it('successfully tracks an application using applicationNumber and matriculation number', async () => {
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce({
+          id: 'app-2',
+          applicationNumber: 'FOC-2026-C1D2E3',
+          jambRegNo: 'CSC/2023/042',
+          fullName: 'Continuing Student',
+          email: 'student@gmail.com',
+          entryLevel: 300,
+          session: '2026/2027',
+          status: OnboardingStatus.under_review,
+          department: mockDepartmentCs,
+          documents: [],
+          reviewLogs: [],
+        });
+
+        const res = await service.trackApplication({
+          applicationNumber: 'FOC-2026-C1D2E3',
+          identifier: 'CSC/2023/042',
+        });
+
+        expect(res.application.applicationNumber).toBe('FOC-2026-C1D2E3');
+      });
+
+      it('retains backward compatibility tracking with jambRegNo parameter', async () => {
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce({
+          id: 'app-3',
+          applicationNumber: 'APP-2025-ABC123',
+          jambRegNo: '202611223344AA',
+          fullName: 'Freshman Candidate',
+          email: 'freshman@gmail.com',
+          entryLevel: 100,
+          session: '2025/2026',
+          status: OnboardingStatus.draft,
+          department: mockDepartmentCs,
+          documents: [],
+          reviewLogs: [],
+        });
+
+        const res = await service.trackApplication({
+          applicationNumber: 'APP-2025-ABC123',
+          jambRegNo: '202611223344AA',
+        });
+
+        expect(res.application.applicationNumber).toBe('APP-2025-ABC123');
+      });
+
+      it('rejects tracking request if identifier is missing or empty', async () => {
+        await expect(
+          service.trackApplication({
+            applicationNumber: 'FOC-2026-ABC123',
+            identifier: '',
+          }),
+        ).rejects.toThrow(BadRequestException);
+      });
+
+      it('successfully tracks an application using applicationNumber and phone identifier', async () => {
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce({
+          id: 'app-phone-1',
+          applicationNumber: 'FOC-2026-PHONE1',
+          jambRegNo: 'APP/PHONE123',
+          fullName: 'Phone Candidate',
+          email: 'phone@candidate.com',
+          phone: '08099887766',
+          entryLevel: 100,
+          session: '2026/2027',
+          status: OnboardingStatus.under_review,
+          department: mockDepartmentCs,
+          documents: [],
+          reviewLogs: [],
+        });
+
+        const res = await service.trackApplication({
+          applicationNumber: 'FOC-2026-PHONE1',
+          identifier: '08099887766',
+        });
+
+        expect(res.application).toBeDefined();
+        expect(res.application.applicationNumber).toBe('FOC-2026-PHONE1');
+      });
+
+      it('normalizes identifier whitespace and case when tracking', async () => {
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce({
+          id: 'app-norm-1',
+          applicationNumber: 'FOC-2026-NORM01',
+          jambRegNo: '2026NORM1234AB',
+          fullName: 'Norm Candidate',
+          email: 'norm@example.com',
+          entryLevel: 100,
+          session: '2026/2027',
+          status: OnboardingStatus.under_review,
+          department: mockDepartmentCs,
+          documents: [],
+          reviewLogs: [],
+        });
+
+        const res = await service.trackApplication({
+          applicationNumber: '  foc-2026-norm01  ',
+          identifier: '  2026norm1234ab  ',
+        });
+
+        expect(res.application.applicationNumber).toBe('FOC-2026-NORM01');
+      });
+
+      it('enforces dual-factor application lookup: correct application reference with another candidate identifier returns NotFoundException', async () => {
+        // Prisma findFirst will return null because the OR clause does not match the record with this applicationNumber
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+
+        await expect(
+          service.trackApplication({
+            applicationNumber: 'FOC-2026-TARGET1',
+            identifier: 'attacker-or-other-student@gmail.com',
+          }),
+        ).rejects.toThrow('No matching application record found');
+      });
+
+      it('throws NotFoundException when no matching application exists without exposing sensitive data', async () => {
+        mockPrisma.onboardingApplication.findFirst.mockResolvedValueOnce(null);
+
+        await expect(
+          service.trackApplication({
+            applicationNumber: 'FOC-2026-UNKNOWN',
+            identifier: 'wrong@example.com',
+          }),
+        ).rejects.toThrow('No matching application record found');
       });
     });
   });

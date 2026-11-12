@@ -154,8 +154,7 @@ export class OnboardingController {
     if (!caller) {
       try {
         const rawToken = this.extractCandidateToken(req);
-        // Candidate token could match sub
-        caller = { applicationId: rawToken };
+        caller = { token: rawToken };
       } catch {
         // No caller
       }
