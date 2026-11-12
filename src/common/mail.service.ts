@@ -97,6 +97,7 @@ export class ConsoleEmailAdapter implements EmailProviderAdapter {
 
 export class ManagedHttpEmailAdapter implements EmailProviderAdapter {
   readonly name: string;
+  private readonly logger = new Logger(ManagedHttpEmailAdapter.name);
 
   constructor(
     providerName: string,
